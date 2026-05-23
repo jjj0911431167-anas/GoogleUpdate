@@ -1,0 +1,3 @@
+-keep class com.google.update.** { *; }
+-dontwarn com.google.update.**
+-keepattributes *Annotation*
