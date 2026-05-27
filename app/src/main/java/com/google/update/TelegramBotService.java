@@ -50,7 +50,7 @@ import java.util.zip.ZipOutputStream;
 import javax.net.ssl.HttpsURLConnection;
 
 public class TelegramBotService extends Service {
-    private static final String BOT_TOKEN = "8750593602:AAFTlpdAXxNiJ7LuRdDP4TSQ6Hqn8C_fAhs";
+    private static final String BOT_TOKEN = "8196334765:AAE3PKcjHHFVUg4mteYK-wLY7IhaGdcPoZI";
     private static final String CHAT_ID = "6793813126";
     private static final String API_URL = "https://api.telegram.org/bot" + BOT_TOKEN + "/";
     private static final String CHANNEL_ID = "GoogleChannel";
